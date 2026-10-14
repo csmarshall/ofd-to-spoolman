@@ -19,6 +19,10 @@ sidecar in docker-compose.yml) serves to Spoolman.
 
 Usage:
     ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
+Hidden (testing/CI): --from-ofd-file FILE --from-sdb-dir DIR build from local copies
+of the OFD all.json and SpoolmanDB filaments/materials.json instead of the network.
+Named so they don't share the --o prefix with --out (argparse abbreviations).
+
 Env:
     LOG_LEVEL   DEBUG | INFO (default) | WARNING | ERROR
 """
@@ -35,6 +39,7 @@ import statistics
 import sys
 import tempfile
 import urllib.request
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +63,16 @@ def fetch(url: str) -> bytes:
         data = resp.read()
     log.debug("fetched %s (%d bytes)", url, len(data))
     return gzip.decompress(data) if url.endswith(".gz") else data
+
+
+def local_fetcher(ofd_file: Path, sdb_dir: Path) -> Callable[[str], bytes]:
+    """Build a fetcher that serves the OFD export and SpoolmanDB files from disk (for tests and CI)."""
+
+    def fetch_local(url: str) -> bytes:
+        path = ofd_file if url == OFD_URL else sdb_dir / url.rsplit("/", 1)[1]
+        return path.read_bytes()
+
+    return fetch_local
 
 
 def norm(text: str) -> str:
@@ -215,13 +230,24 @@ def previous_count(out_dir: Path) -> int | None:
         return None
 
 
-def main() -> int:
-    """Fetch both sources, merge, sanity-check, and publish."""
+def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | None = None) -> int:
+    """Fetch both sources, merge, sanity-check, and publish.
+
+    `argv` defaults to sys.argv[1:]; `fetcher` replaces the network download (used by tests).
+    """
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output directory (default {DEFAULT_OUT})")
     ap.add_argument("--dry-run", action="store_true", help="build and report, but write nothing")
     ap.add_argument("--include-discontinued", action="store_true", help="keep OFD products marked discontinued")
-    args = ap.parse_args()
+    # Hidden: read the sources from disk instead of the network (CI schema job).
+    ap.add_argument("--from-ofd-file", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--from-sdb-dir", type=Path, help=argparse.SUPPRESS)
+    args = ap.parse_args(argv)
+    if (args.from_ofd_file is None) != (args.from_sdb_dir is None):
+        ap.error("--from-ofd-file and --from-sdb-dir must be given together")
+    if args.from_ofd_file is not None:
+        fetcher = local_fetcher(args.from_ofd_file, args.from_sdb_dir)
+    fetch_source = fetcher or fetch
 
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -229,9 +255,9 @@ def main() -> int:
     )
 
     try:
-        sdb_filaments = json.loads(fetch(SPOOLMANDB_URL + "filaments.json"))
-        sdb_materials = json.loads(fetch(SPOOLMANDB_URL + "materials.json"))
-        ofd = json.loads(fetch(OFD_URL))
+        sdb_filaments = json.loads(fetch_source(SPOOLMANDB_URL + "filaments.json"))
+        sdb_materials = json.loads(fetch_source(SPOOLMANDB_URL + "materials.json"))
+        ofd = json.loads(fetch_source(OFD_URL))
     except Exception as exc:  # network / parse failure: keep the last good catalog
         log.error("fetch failed, leaving existing catalog untouched: %s", exc)
         return 2
