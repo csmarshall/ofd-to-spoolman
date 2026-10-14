@@ -50,6 +50,9 @@ class TestDisplayName:
     def test_brand_with_spaced_hyphen_stripped(self) -> None:
         assert display_name("Brand - PLA", "Brand", "PLA", "Red") == "Red"
 
+    def test_brand_directly_followed_by_hyphen_stripped(self) -> None:
+        assert display_name("Brand-PLA", "Brand", "PLA", "Red") == "Red"
+
     def test_brand_only_name_stripped(self) -> None:
         assert display_name("Brand", "Brand", "PLA", "Red") == "Red"
 
