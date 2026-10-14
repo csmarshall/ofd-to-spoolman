@@ -1,0 +1,418 @@
+{
+  "version": "2026.10.13",
+  "generated_at": "2026-10-13T03:01:57Z",
+  "brands": [
+    {
+      "uuid": "00000000-0000-5000-8000-000000000100",
+      "id": "00000000-0000-5000-8000-000000000001",
+      "name": "SUNLU",
+      "website": "https://example.com",
+      "logo_name": "logo.png",
+      "origin": "XX",
+      "slug": "sunlu"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000101",
+      "id": "00000000-0000-5000-8000-000000000002",
+      "name": "Acme",
+      "website": "https://example.com",
+      "logo_name": "logo.png",
+      "origin": "XX",
+      "slug": "acme"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000102",
+      "id": "00000000-0000-5000-8000-000000000003",
+      "name": "Zeta",
+      "website": "https://example.com",
+      "logo_name": "logo.png",
+      "origin": "XX",
+      "slug": "zeta"
+    }
+  ],
+  "materials": [],
+  "filaments": [
+    {
+      "uuid": "00000000-0000-5000-8000-000000000201",
+      "id": "00000000-0000-5000-8000-000000000011",
+      "name": "SUNLU PLA",
+      "diameter_tolerance": 0.05,
+      "density": 1.24,
+      "min_print_temperature": 190,
+      "max_print_temperature": 220,
+      "min_bed_temperature": 0,
+      "max_bed_temperature": 60,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000001",
+      "material_id": "00000000-0000-5000-8000-000000000301",
+      "slug": "sunlu_pla",
+      "material": "PLA"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000202",
+      "id": "00000000-0000-5000-8000-000000000012",
+      "name": "PETG+",
+      "diameter_tolerance": 0.05,
+      "density": 1.27,
+      "min_print_temperature": 220,
+      "max_print_temperature": 250,
+      "min_bed_temperature": 70,
+      "max_bed_temperature": 90,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000002",
+      "material_id": "00000000-0000-5000-8000-000000000302",
+      "slug": "petg+",
+      "material": "PETG"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000203",
+      "id": "00000000-0000-5000-8000-000000000013",
+      "name": "Acme PLA Matte",
+      "diameter_tolerance": 0.05,
+      "density": 1.24,
+      "min_print_temperature": 200,
+      "max_print_temperature": 220,
+      "min_bed_temperature": 0,
+      "max_bed_temperature": 0,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000002",
+      "material_id": "00000000-0000-5000-8000-000000000303",
+      "slug": "acme_pla_matte",
+      "material": "PLA"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000204",
+      "id": "00000000-0000-5000-8000-000000000014",
+      "name": "Old PLA",
+      "diameter_tolerance": 0.05,
+      "density": 1.24,
+      "min_print_temperature": 200,
+      "max_print_temperature": 220,
+      "min_bed_temperature": 50,
+      "max_bed_temperature": 60,
+      "discontinued": true,
+      "brand_id": "00000000-0000-5000-8000-000000000002",
+      "material_id": "00000000-0000-5000-8000-000000000304",
+      "slug": "old_pla",
+      "material": "PLA"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000205",
+      "id": "00000000-0000-5000-8000-000000000015",
+      "name": "Zeta Flex",
+      "diameter_tolerance": 0.05,
+      "density": 1.2,
+      "min_print_temperature": 210,
+      "max_print_temperature": 230,
+      "min_bed_temperature": 30,
+      "max_bed_temperature": 50,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000003",
+      "material_id": "00000000-0000-5000-8000-000000000305",
+      "slug": "zeta_flex",
+      "material": "TPU95"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000206",
+      "id": "00000000-0000-5000-8000-000000000016",
+      "name": "Zeta Flex Pro",
+      "diameter_tolerance": 0.05,
+      "density": 1.22,
+      "min_print_temperature": 220,
+      "max_print_temperature": 240,
+      "min_bed_temperature": 40,
+      "max_bed_temperature": 60,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000003",
+      "material_id": "00000000-0000-5000-8000-000000000306",
+      "slug": "zeta_flex_pro",
+      "material": "TPU95"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000207",
+      "id": "00000000-0000-5000-8000-000000000017",
+      "name": "Zeta Mystery",
+      "diameter_tolerance": 0.05,
+      "min_print_temperature": null,
+      "max_print_temperature": null,
+      "min_bed_temperature": null,
+      "max_bed_temperature": null,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000003",
+      "material_id": "00000000-0000-5000-8000-000000000307",
+      "slug": "zeta_mystery",
+      "material": "PLA"
+    }
+  ],
+  "variants": [
+    {
+      "uuid": "00000000-0000-5000-8000-000000000401",
+      "id": "00000000-0000-5000-8000-000000000031",
+      "name": "Black",
+      "color_hex": "#000000",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000011",
+      "slug": "black"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000402",
+      "id": "00000000-0000-5000-8000-000000000032",
+      "name": "White",
+      "color_hex": "#FFFFFF",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000011",
+      "slug": "white"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000403",
+      "id": "00000000-0000-5000-8000-000000000033",
+      "name": "Black",
+      "color_hex": "#1A1A1A",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000012",
+      "slug": "black"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000404",
+      "id": "00000000-0000-5000-8000-000000000034",
+      "name": "Red",
+      "color_hex": "FF0000",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000013",
+      "slug": "red",
+      "traits": {
+        "matte": true,
+        "glitter": true,
+        "glow": false
+      }
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000405",
+      "id": "00000000-0000-5000-8000-000000000035",
+      "name": "Marble Grey",
+      "color_hex": "#808080",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000013",
+      "slug": "marble_grey",
+      "traits": {
+        "imitates_marble": true,
+        "translucent": true
+      }
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000406",
+      "id": "00000000-0000-5000-8000-000000000036",
+      "name": "Mystery",
+      "color_hex": "#zzz",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000013",
+      "slug": "mystery"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000407",
+      "id": "00000000-0000-5000-8000-000000000037",
+      "name": "Retired Blue",
+      "color_hex": "#0000FF",
+      "discontinued": true,
+      "filament_id": "00000000-0000-5000-8000-000000000013",
+      "slug": "retired_blue"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000408",
+      "id": "00000000-0000-5000-8000-000000000038",
+      "name": "Green",
+      "color_hex": "#00FF00",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000014",
+      "slug": "green"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000409",
+      "id": "00000000-0000-5000-8000-000000000039",
+      "name": "Orange",
+      "color_hex": "#FFA500FF",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000015",
+      "slug": "orange",
+      "traits": {
+        "transparent": true,
+        "glow": true
+      }
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000410",
+      "id": "00000000-0000-5000-8000-000000000040",
+      "name": "Cyan",
+      "color_hex": "#00FFFF",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000016",
+      "slug": "cyan"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000411",
+      "id": "00000000-0000-5000-8000-000000000041",
+      "name": "Pink",
+      "color_hex": "#FFC0CB",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000017",
+      "slug": "pink"
+    }
+  ],
+  "sizes": [
+    {
+      "uuid": "00000000-0000-5000-8000-000000000501",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "empty_spool_weight": 200,
+      "article_number": "A0001",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000051",
+      "variant_id": "00000000-0000-5000-8000-000000000031"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000502",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "empty_spool_weight": 200,
+      "article_number": "A0002",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000052",
+      "variant_id": "00000000-0000-5000-8000-000000000032"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000503",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0003",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000053",
+      "variant_id": "00000000-0000-5000-8000-000000000033"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000504",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "empty_spool_weight": 180,
+      "article_number": "A0004",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000054",
+      "variant_id": "00000000-0000-5000-8000-000000000034"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000505",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0005",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000055",
+      "variant_id": "00000000-0000-5000-8000-000000000035"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000506",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0006",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000056",
+      "variant_id": "00000000-0000-5000-8000-000000000036"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000507",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0007",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000057",
+      "variant_id": "00000000-0000-5000-8000-000000000037"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000508",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0008",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000058",
+      "variant_id": "00000000-0000-5000-8000-000000000038"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000509",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0009",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000059",
+      "variant_id": "00000000-0000-5000-8000-000000000039"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000510",
+      "filament_weight": 750,
+      "diameter": 1.75,
+      "spool_refill": true,
+      "article_number": "A0010",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000060",
+      "variant_id": "00000000-0000-5000-8000-000000000039"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000511",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0011",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000061",
+      "variant_id": "00000000-0000-5000-8000-000000000040"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000512",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0012",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000062",
+      "variant_id": "00000000-0000-5000-8000-000000000041"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000513",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0013",
+      "discontinued": true,
+      "id": "00000000-0000-5000-8000-000000000063",
+      "variant_id": "00000000-0000-5000-8000-000000000032"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000514",
+      "filament_weight": 0,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0014",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000064",
+      "variant_id": "00000000-0000-5000-8000-000000000032"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000515",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "article_number": "A0015",
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000065",
+      "variant_id": "00000000-0000-5000-8000-000000000999"
+    }
+  ],
+  "stores": [],
+  "purchase_links": []
+}
