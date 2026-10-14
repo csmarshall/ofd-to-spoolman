@@ -161,11 +161,21 @@ class TestMain:
         assert black[0]["id"] == "sunlu_pla_black_1000_175_n"  # the SpoolmanDB entry, not ofd_*
         assert any(f["name"] == "White" and f["id"].startswith("ofd_") for f in load(tmp_path))
 
+    def test_same_name_different_weight_is_not_a_duplicate(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        """dedupe_key includes weight: a SpoolmanDB 500 g Sunlu Black must not swallow OFD's 1000 g one."""
+        sdb_url = ofd2spoolman.SPOOLMANDB_URL + "filaments.json"
+        sdb = json.loads(sources[sdb_url])
+        for f in sdb:
+            if f["manufacturer"] == "Sunlu" and f["name"] == "Black":
+                f["weight"] = 500.0
+        assert run(tmp_path, payloads={**sources, sdb_url: json.dumps(sdb).encode()}) == 0
+        black = [f for f in load(tmp_path) if f["manufacturer"] == "Sunlu" and f["name"] == "Black"]
+        assert sorted(f["weight"] for f in black) == [500.0, 1000.0]
+
     def test_spoolmandb_entries_pass_through_unchanged(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
         assert run(tmp_path) == 0
         original = json.loads(sources[ofd2spoolman.SPOOLMANDB_URL + "filaments.json"])
         out = load(tmp_path)
-        original[0]["manufacturer"] = "Sunlu"  # already that spelling
         assert out[: len(original)] == original
 
     def test_discontinued_flag(self, run: RunFn, tmp_path: Path) -> None:
@@ -182,13 +192,13 @@ class TestMain:
 
     def test_cli_reads_fixtures_from_disk(self, tmp_path: Path) -> None:
         fixtures = Path(__file__).parent / "fixtures"
-        argv = ["--out", str(tmp_path), "--ofd-file", str(fixtures / "ofd_all.json"), "--sdb-dir", str(fixtures / "sdb")]
+        argv = ["--out", str(tmp_path), "--from-ofd-file", str(fixtures / "ofd_all.json"), "--from-sdb-dir", str(fixtures / "sdb")]
         assert ofd2spoolman.main(argv) == 0
         assert len(load(tmp_path)) == 10
 
     def test_disk_sources_options_must_pair(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit) as exc:
-            ofd2spoolman.main(["--out", str(tmp_path), "--ofd-file", "x.json"])
+            ofd2spoolman.main(["--out", str(tmp_path), "--from-ofd-file", "x.json"])
         assert exc.value.code == 2
 
 
@@ -250,3 +260,32 @@ class TestPublish:
         assert (tmp_path / "a.json").read_text() == "[1]"
         assert (tmp_path / "a.json").stat().st_ino != inode_before  # new file renamed in, not rewritten in place
         assert [p.name for p in tmp_path.iterdir()] == ["a.json"]
+
+
+class TestFetch:
+    def test_gunzips_gz_urls_and_sends_user_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The production fetch path (tests otherwise inject a fetcher): .gz payloads are decompressed."""
+        import gzip
+        import io
+        import urllib.request
+
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(req: urllib.request.Request, timeout: float) -> io.BytesIO:
+            seen["ua"] = req.get_header("User-agent")
+            seen["timeout"] = timeout
+            return io.BytesIO(gzip.compress(b'{"ok": true}') if req.full_url.endswith(".gz") else b"plain")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert ofd2spoolman.fetch("https://example.invalid/all.json.gz") == b'{"ok": true}'
+        assert ofd2spoolman.fetch("https://example.invalid/filaments.json") == b"plain"
+        assert seen["ua"] == ofd2spoolman.USER_AGENT
+        assert seen["timeout"] > 0
+
+
+class TestCli:
+    def test_out_abbreviation_still_works(self, sources: dict[str, bytes], tmp_path: Path) -> None:
+        """Regression: hidden options must not make `--o` ambiguous with `--out`."""
+        from conftest import fetcher_for
+
+        assert ofd2spoolman.main(["--o", str(tmp_path), "--dry-run"], fetcher=fetcher_for(sources)) == 0

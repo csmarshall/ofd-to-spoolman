@@ -19,6 +19,10 @@ sidecar in docker-compose.yml) serves to Spoolman.
 
 Usage:
     ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
+Hidden (testing/CI): --from-ofd-file FILE --from-sdb-dir DIR build from local copies
+of the OFD all.json and SpoolmanDB filaments/materials.json instead of the network.
+Named so they don't share the --o prefix with --out (argparse abbreviations).
+
 Env:
     LOG_LEVEL   DEBUG | INFO (default) | WARNING | ERROR
 """
@@ -236,13 +240,13 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
     ap.add_argument("--dry-run", action="store_true", help="build and report, but write nothing")
     ap.add_argument("--include-discontinued", action="store_true", help="keep OFD products marked discontinued")
     # Hidden: read the sources from disk instead of the network (CI schema job).
-    ap.add_argument("--ofd-file", type=Path, help=argparse.SUPPRESS)
-    ap.add_argument("--sdb-dir", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--from-ofd-file", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--from-sdb-dir", type=Path, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
-    if (args.ofd_file is None) != (args.sdb_dir is None):
-        ap.error("--ofd-file and --sdb-dir must be given together")
-    if args.ofd_file is not None:
-        fetcher = local_fetcher(args.ofd_file, args.sdb_dir)
+    if (args.from_ofd_file is None) != (args.from_sdb_dir is None):
+        ap.error("--from-ofd-file and --from-sdb-dir must be given together")
+    if args.from_ofd_file is not None:
+        fetcher = local_fetcher(args.from_ofd_file, args.from_sdb_dir)
     fetch_source = fetcher or fetch
 
     logging.basicConfig(

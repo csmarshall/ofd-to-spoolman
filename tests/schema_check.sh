@@ -21,7 +21,7 @@ validate() {
 }
 
 echo "[INFO] building catalog from fixtures"
-python3 "$REPO/ofd2spoolman.py" --out "$WORK/good" --ofd-file "$HERE/fixtures/ofd_all.json" --sdb-dir "$HERE/fixtures/sdb"
+python3 "$REPO/ofd2spoolman.py" --out "$WORK/good" --from-ofd-file "$HERE/fixtures/ofd_all.json" --from-sdb-dir "$HERE/fixtures/sdb"
 
 echo "[INFO] good catalog must validate"
 validate "$WORK/good"
@@ -37,5 +37,5 @@ for needle in 'INVALID filaments.json' 'INVALID materials.json' finish density; 
     grep -q "$needle" "$WORK/bad.log" || { echo "[ERROR] bad catalog failed, but not on '$needle':" >&2; cat "$WORK/bad.log" >&2; exit 1; }
 done
 echo "[INFO] known-bad catalog rejected as expected:"
-grep -E "^INVALID|validation error|^[0-9.a-z_]+$|Input should|Field required" "$WORK/bad.log" | head -12
+grep -E "^INVALID|validation error|^[0-9.a-z_]+$|Input should|Field required" "$WORK/bad.log" | sed -n 1,12p
 echo "[INFO] schema check passed"
