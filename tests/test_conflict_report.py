@@ -75,6 +75,38 @@ class TestFieldDiffs:
         assert fields_of(cr.find_conflicts([entry()], [o], {})) == ["density"]
 
 
+class TestToleranceBoundaries:
+    """Differences exactly at a tolerance are noise (including float noise); just over is a conflict."""
+
+    @pytest.mark.parametrize(
+        ("field", "sdb", "ofd", "conflict"),
+        [
+            ("density", 1.24, 1.25, False),  # 1.25 - 1.24 == 0.010000000000000009 in floats
+            ("density", 1.25, 1.24, False),
+            ("density", 1.0, 1.01, False),
+            ("density", 1.24, 1.251, True),
+            ("extruder_temp", 200, 210, False),
+            ("extruder_temp", 200, 211, True),
+            ("bed_temp", 60, 50, False),
+            ("bed_temp", 60, 49, True),
+            ("spool_weight", 200, 210, False),
+            ("spool_weight", 200.0, 210.0, False),
+            ("spool_weight", 200, 211, True),
+        ],
+    )
+    def test_numeric_boundary(self, field: str, sdb: float, ofd: float, conflict: bool) -> None:
+        assert cr.field_differs(field, sdb, ofd) is conflict
+
+    @pytest.mark.parametrize(("other", "conflict"), [("0c0c0c", False), ("0d0d0d", True), ("000000", False)])
+    def test_hex_channel_boundary(self, other: str, conflict: bool) -> None:
+        # HEX_CHANNEL_TOLERANCE is 12 == 0x0c
+        assert cr.hex_conflict("000000", other) is conflict
+
+    @pytest.mark.parametrize("junk", ["abc", True, float("nan"), float("inf"), [1], {"a": 1}])
+    def test_non_numeric_upstream_values_do_not_crash_or_conflict(self, junk: Any) -> None:
+        assert cr.field_differs("density", 1.2, junk) is False
+
+
 class TestSizeConflicts:
     def test_each_side_listing_a_size_the_other_lacks_is_one_size_conflict(self) -> None:
         found = cr.find_conflicts([entry(weight=750.0)], [ofd_entry(weight=1000.0)], {})
@@ -88,6 +120,25 @@ class TestSizeConflicts:
     def test_a_size_only_one_side_lists_is_a_coverage_gap_not_a_conflict(self) -> None:
         sdb = [entry(), entry(id="sdb_2", weight=750.0)]
         assert cr.find_conflicts(sdb, [ofd_entry()], {}) == []
+
+    def test_partial_overlap_with_a_shared_size_is_not_a_size_conflict(self) -> None:
+        sdb = [entry(), entry(id="sdb_2", weight=750.0)]
+        ofd = [ofd_entry(), ofd_entry(id="ofd_2", weight=250.0)]
+        assert cr.find_conflicts(sdb, ofd, {}) == []
+
+    def test_size_conflict_key_does_not_depend_on_feed_order_or_which_member_is_first(self) -> None:
+        a = [entry(id="s_a", weight=750.0), entry(id="s_b", weight=500.0)]
+        b = [ofd_entry(id="o_a", weight=1000.0), ofd_entry(id="o_b", weight=250.0)]
+        forward = cr.find_conflicts(a, b, {})
+        backward = cr.find_conflicts(a[::-1], b[::-1], {})
+        assert [cr.conflict_key(c) for c in forward] == [cr.conflict_key(c) for c in backward]
+        assert forward[0]["sdb_value"] == "500 g / 1.75 mm, 750 g / 1.75 mm"
+
+    def test_duplicate_sdb_entries_resolve_to_the_lowest_id_regardless_of_order(self) -> None:
+        dup_a, dup_b = entry(id="a", density=1.5), entry(id="b", density=1.7)
+        for order in ([dup_a, dup_b], [dup_b, dup_a]):
+            (found,) = cr.find_conflicts(order, [ofd_entry()], {})
+            assert (found["sdb_id"], found["sdb_value"]) == ("a", 1.5)
 
     def test_exact_match_alongside_extra_sizes_reports_no_size_conflict(self) -> None:
         sdb = [entry()]
@@ -115,8 +166,18 @@ class TestNewVersusPrevious:
         assert cr.load_previous(None) is None
         assert cr.load_previous(tmp_path / "absent.json") is None
         assert cr.load_previous(bad) is None
-        bad.write_text(json.dumps({"keys": ["a"]}))
-        assert cr.load_previous(bad) == {"a"}
+        bad.write_text(json.dumps({"keys": ["a"], "counts": {"matched": 3}}))
+        loaded = cr.load_previous(bad)
+        assert loaded is not None
+        assert (loaded.keys, loaded.counts) == ({"a"}, {"matched": 3})
+
+    @pytest.mark.parametrize(
+        "raw", [{"keys": "abc"}, {"keys": [1, 2]}, {"keys": None}, {"keys": [], "counts": {"x": "y"}}, [1], {"keys": [], "counts": []}]
+    )
+    def test_malformed_state_shapes_mean_baseline(self, tmp_path: Path, raw: Any) -> None:
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(raw))
+        assert cr.load_previous(state) is None
 
 
 class TestRendering:
@@ -136,6 +197,40 @@ class TestRendering:
         assert "### density (1)" in body
         assert "Truncated" not in body
 
+    def multi(self, per_field: int, **extra: Any) -> list[cr.Conflict]:
+        out: list[cr.Conflict] = []
+        for field in cr.FIELDS:
+            s = entry(name=f"{field} " + "N" * 60 + extra.get("suffix", ""))
+            out += [cr.make_conflict(field, s, ofd_entry(id=f"ofd_{field}_{i}"), 1, 2, {}) for i in range(per_field)]
+        return out
+
+    def test_truncation_gives_every_field_entries_and_true_totals(self) -> None:
+        conflicts = self.multi(200)
+        body = cr.render_issue_body(conflicts, 0, "v", baseline=True, budget=6000)
+        for field in cr.FIELDS:
+            assert f"### {field} (200)" in body
+            section = body.split(f"### {field} (200)")[1].split("\n### ")[0]
+            assert section.count("\n- **") >= 3, field
+        assert "Truncated" in body
+
+    def test_truncation_notice_links_the_full_artifact(self) -> None:
+        body = cr.render_issue_body(self.multi(50), 0, "v", baseline=True, budget=3000, full_report_url="https://example.com/run/1")
+        assert "conflicts-full" in body and "https://example.com/run/1" in body
+
+    def test_budget_is_measured_in_utf8_bytes_not_characters(self) -> None:
+        conflicts = self.multi(40, suffix="\u00e9" * 60 + "\U0001f600" * 20)
+        body = cr.render_issue_body(conflicts, 0, "v", baseline=True)
+        assert len(body.encode()) <= cr.BODY_BUDGET_BYTES
+        assert len(body) < len(body.encode())  # genuinely multi-byte
+        small = cr.render_issue_body(conflicts, 0, "v", baseline=True, budget=5000)
+        assert len(small.encode()) <= 5000
+
+    def test_full_report_has_every_conflict_untruncated(self) -> None:
+        conflicts = self.multi(300)
+        full = cr.render_digest("## full", "intro", conflicts, budget=None)
+        assert full.count("\n- **") == len(conflicts)
+        assert "Truncated" not in full
+
     def test_oversized_digest_stays_under_github_limit_and_says_how_many_were_cut(self) -> None:
         conflicts = self.many(1000)
         body = cr.render_issue_body(conflicts, 1000, "v", baseline=True)
@@ -153,6 +248,36 @@ class TestRendering:
     def test_pipes_in_names_are_escaped(self) -> None:
         found = cr.find_conflicts([entry(name="A|B")], [ofd_entry(name="A|B", density=1.5)], {})
         assert "A\\|B" in cr.render_line(found[0])
+
+    @pytest.mark.parametrize(
+        ("hostile", "must_not_contain"),
+        [
+            ("evil\r\nINJECT", "\r"),
+            ("a\x00b\x1bc\u2028d\u200be", "\x1b"),
+            ("ping @maintainer", "@"),
+            ("fixes #15", "#15"),
+            ("[click](https://evil.example/x)", "]("),
+            ("https://evil.example", "://"),
+            ("see www.evil.example", "www."),
+            ("<script>x</script> <!-- c -->", "<"),
+            ("`code` *b* _i_ ~s~ !x", "`"),
+        ],
+    )
+    def test_upstream_text_is_made_inert(self, hostile: str, must_not_contain: str) -> None:
+        cleaned = cr.clean(hostile)
+        assert must_not_contain not in cleaned.replace("\\" + must_not_contain, "")
+        assert "\n" not in cleaned and "\r" not in cleaned
+
+    def test_control_and_format_characters_are_replaced_by_spaces(self) -> None:
+        assert cr.clean("a\x00b\x1bc\u200bd\u2028e\rf") == "a b c d e f"
+
+    def test_hostile_name_is_inert_in_a_rendered_line_and_in_dry_run_output(self) -> None:
+        name = "x\r@bob [l](http://e.x) #1"
+        (found,) = cr.find_conflicts([entry(name=name)], [ofd_entry(name=name, density=1.5)], {})
+        line = cr.render_line(found)
+        product = line.split(": SpoolmanDB")[0]  # the legitimate link follows; only the upstream-derived text must be inert
+        assert "\r" not in line
+        assert "@bob" not in product and "](http" not in product and "#1" not in product
 
 
 class TestOfdLinks:
@@ -198,6 +323,27 @@ class TestMain:
         assert cr.main(["--dry-run", "--out", str(out)], fetcher=fetcher_for(payloads)) == 0
         assert "## Current conflicts" in capsys.readouterr().out
         assert not out.exists()
+
+    def test_empty_upstream_is_refused_without_writing(self, tmp_path: Path, sources: dict[str, bytes]) -> None:
+        empty = sources | {ofd2spoolman.SPOOLMANDB_URL + "filaments.json": b"[]"}
+        assert cr.main(["--out", str(tmp_path / "o")], fetcher=fetcher_for(empty)) == 5
+        assert not (tmp_path / "o").exists()
+
+    def test_sharp_drop_against_previous_counts_is_refused_but_a_sane_run_is_accepted(
+        self, tmp_path: Path, payloads: dict[str, bytes]
+    ) -> None:
+        good, bad = tmp_path / "good.json", tmp_path / "bad.json"
+        good.write_text(json.dumps({"keys": [], "counts": {"sdb_filaments": 2, "ofd_filaments": 9, "matched": 2}}))
+        bad.write_text(json.dumps({"keys": [], "counts": {"sdb_filaments": 2, "ofd_filaments": 9, "matched": 100}}))
+        assert cr.main(["--out", str(tmp_path / "a"), "--previous", str(good)], fetcher=fetcher_for(payloads)) == 0
+        assert cr.main(["--out", str(tmp_path / "b"), "--previous", str(bad)], fetcher=fetcher_for(payloads)) == 5
+        assert not (tmp_path / "b").exists()
+
+    def test_state_records_counts_and_the_full_report_is_written(self, tmp_path: Path, payloads: dict[str, bytes]) -> None:
+        cr.main(["--out", str(tmp_path), "--run-url", "https://example.com/run/7"], fetcher=fetcher_for(payloads))
+        counts = json.loads((tmp_path / "state.json").read_text())["counts"]
+        assert counts == {"sdb_filaments": 2, "ofd_filaments": 9, "matched": 1}
+        assert "Full conflict report" in (tmp_path / "conflicts-full.md").read_text()
 
     def test_fetch_failure_exits_2_without_writing(self, tmp_path: Path) -> None:
         def boom(url: str) -> bytes:
