@@ -180,6 +180,27 @@ class TestNewVersusPrevious:
         assert cr.load_previous(state) is None
 
 
+class TestShrinkGuard:
+    BEFORE = 1000
+
+    def previous(self) -> cr.PreviousState:
+        return cr.PreviousState(set(), {"matched": self.BEFORE})
+
+    def test_exactly_at_the_retained_fraction_is_accepted_and_one_below_is_refused(self) -> None:
+        threshold = int(self.BEFORE * cr.MIN_RETAINED_FRACTION)
+        assert cr.shrink_problem({"matched": threshold}, self.previous()) is None
+        assert cr.shrink_problem({"matched": threshold - 1}, self.previous()) is not None
+
+    def test_growth_and_missing_previous_are_accepted_but_empty_never_is(self) -> None:
+        assert cr.shrink_problem({"matched": self.BEFORE * 2}, self.previous()) is None
+        assert cr.shrink_problem({"matched": 1}, None) is None
+        assert cr.shrink_problem({"matched": 0}, None) is not None
+
+    def test_each_counted_source_is_checked(self) -> None:
+        previous = cr.PreviousState(set(), {"a": 100, "b": 100})
+        assert cr.shrink_problem({"a": 100, "b": 10}, previous) is not None
+
+
 class TestRendering:
     def many(self, n: int) -> list[cr.Conflict]:
         s = entry(name="N" * 200)
@@ -268,6 +289,47 @@ class TestRendering:
         assert must_not_contain not in cleaned.replace("\\" + must_not_contain, "")
         assert "\n" not in cleaned and "\r" not in cleaned
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("user@x.com", "user&#64;x.com"),
+            ("fixes #15", "fixes &#35;15"),
+            ("a@b#c", "a&#64;b&#35;c"),
+            ("GH-123 and gh-9", "GH&#45;123 and gh&#45;9"),
+            ("ghost-writer", "ghost-writer"),
+            ("http://x www.y", "http:&#47;&#47;x www&#46;y"),
+        ],
+    )
+    def test_neutralised_triggers_use_exact_entities_without_double_replacement(self, raw: str, expected: str) -> None:
+        assert cr.clean(raw) == expected
+
+    def test_none_and_missing_version_do_not_render_none(self) -> None:
+        assert cr.clean(None) == ""
+        body = cr.render_issue_body([], 0, None, baseline=True)
+        comment = cr.render_new_comment(self.multi(1), None)
+        assert "None" not in body and "None" not in comment
+        assert "(version unknown)" in body
+
+    def test_status_line_only_claims_a_comment_when_there_is_one(self) -> None:
+        assert "posted as a comment" not in cr.render_issue_body([], 0, "v", baseline=False)
+        assert "No new conflicts" in cr.render_issue_body([], 0, "v", baseline=False)
+        assert "3 new since the previous run (posted as a comment)" in cr.render_issue_body([], 3, "v", baseline=False)
+
+    @pytest.mark.parametrize("budget", [2500, 3000, 4000, 6000])
+    def test_body_including_truncation_notice_never_exceeds_the_budget(self, budget: int) -> None:
+        body = cr.render_issue_body(self.multi(100), 0, "v", baseline=True, budget=budget, full_report_url="https://example.com/run/1")
+        assert "Truncated" in body
+        assert len(body.encode()) <= budget
+
+    def test_a_short_line_in_a_later_field_still_fits_after_a_long_line_in_an_earlier_field_does_not(self) -> None:
+        long = cr.make_conflict("density", entry(name="L" * 600), ofd_entry(), 1, 2, {})
+        short = cr.make_conflict("size", entry(name="s"), ofd_entry(id="ofd_2"), 1, 2, {})
+        short_line = cr.render_line(short) + "\n"
+        headers = len(b"\n### density (1)\n") + len(b"\n### size (2)\n")
+        text, omitted = cr.render_sections([long, short, short], headers + 2 * len(short_line.encode()))
+        assert omitted == 1
+        assert text.count(short_line) == 2 and "LLLL" not in text
+
     def test_control_and_format_characters_are_replaced_by_spaces(self) -> None:
         assert cr.clean("a\x00b\x1bc\u200bd\u2028e\rf") == "a b c d e f"
 
@@ -344,6 +406,15 @@ class TestMain:
         counts = json.loads((tmp_path / "state.json").read_text())["counts"]
         assert counts == {"sdb_filaments": 2, "ofd_filaments": 9, "matched": 1}
         assert "Full conflict report" in (tmp_path / "conflicts-full.md").read_text()
+
+    def test_stale_new_conflicts_file_from_a_reused_out_dir_is_removed(self, tmp_path: Path, payloads: dict[str, bytes]) -> None:
+        previous = tmp_path / "prev.json"
+        previous.write_text(json.dumps({"keys": []}))
+        out = tmp_path / "o"
+        cr.main(["--out", str(out), "--previous", str(previous)], fetcher=fetcher_for(payloads))
+        assert (out / "new-conflicts.md").exists()
+        cr.main(["--out", str(out), "--previous", str(out / "state.json")], fetcher=fetcher_for(payloads))
+        assert not (out / "new-conflicts.md").exists()
 
     def test_fetch_failure_exits_2_without_writing(self, tmp_path: Path) -> None:
         def boom(url: str) -> bytes:
