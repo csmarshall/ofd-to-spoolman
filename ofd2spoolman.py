@@ -30,7 +30,9 @@ Env:
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
+import hashlib
 import json
 import logging
 import os
@@ -40,19 +42,41 @@ import sys
 import tempfile
 import urllib.request
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
 DEFAULT_OUT = Path("/opt/sw/spoolman/catalog")
-EXIT_CORRUPT_BASELINE = 7
 USER_AGENT = "ofd2spoolman (self-hosted Spoolman catalog builder)"
 
 # Enum values accepted by Spoolman's ExternalFilament model.
 SPOOLMAN_FINISHES = {"matte", "glossy"}
 SPOOLMAN_PATTERNS = {"marble", "sparkle"}
 HEX_RE = re.compile(r"^[0-9a-f]{6}([0-9a-f]{2})?$")
+
+# Exit codes (also in the README). 0 and EXIT_PUBLISHED_WITH_WARNINGS are the only ones where
+# the catalog was published; every other non-zero code left the live catalog untouched.
+EXIT_FETCH_FAILED = 2
+EXIT_DUPLICATE_IDS = 3
+EXIT_CATALOG_SHRANK = 4
+EXIT_SPOOLMANDB_NOT_SUPERSET = 5
+EXIT_SOURCE_SHRANK = 6
+EXIT_CORRUPT_BASELINE = 7
+EXIT_PUBLISHED_WITH_WARNINGS = 10  # deliberately far from the failure codes: success, but look at the log
+
+# A catalog (or one source) may lose at most half of its last good size. Shared by the whole-catalog
+# guard and the per-source guards: the smallest legitimate drop we have seen is a few percent (OFD
+# pruning discontinued items), while a broken export or an empty-array response loses ~100%, so any
+# fraction between the two separates them; 50% was already the project's chosen point.
+MIN_RETAINED_FRACTION = 0.5
+
+# OFD rebuilds its export daily (~03:00 UTC). Three days = two missed rebuilds plus slack for a
+# weekend, which is the figure the issue asked for; a single missed night is not worth a warning.
+OFD_STALE_AFTER = timedelta(days=3)
+
+STATE_FILE = "state.json"
 
 log = logging.getLogger("ofd2spoolman")
 
@@ -345,10 +369,146 @@ def previous_count(out_dir: Path) -> int | None:
     return len(published)
 
 
-def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | None = None) -> int:
+def below_floor(count: int, last_good: int | None) -> bool:
+    """True when `count` fell under MIN_RETAINED_FRACTION of the last good size (no baseline: False)."""
+    return bool(last_good) and count < int(last_good * MIN_RETAINED_FRACTION)  # type: ignore[operator]
+
+
+def check_spoolmandb_superset(
+    sdb_filaments: list[dict[str, Any]],
+    sdb_materials: list[dict[str, Any]],
+    filaments: list[dict[str, Any]],
+    materials: list[dict[str, Any]],
+) -> list[str]:
+    """Problems (empty = fine) found comparing raw SpoolmanDB data with the merged output.
+
+    EXTERNAL_DB_URL replaces Spoolman's default SpoolmanDB, so anything we lose is gone from the
+    dropdown. The snapshot must predate the brand-spelling rewrite: manufacturer is compared by
+    norm(), every other field exactly.
+    """
+    problems: list[str] = []
+    out_by_id = {f["id"]: f for f in filaments}
+    for want in sdb_filaments:
+        got = out_by_id.get(want["id"])
+        if got is None:
+            problems.append(f"SpoolmanDB filament {want['id']} missing from output")
+            continue
+        for key in sorted(set(want) | set(got)):
+            same = want.get(key) == got.get(key)
+            if key == "manufacturer":
+                same = norm(want.get(key) or "") == norm(got.get(key) or "")
+            if not same:
+                problems.append(f"SpoolmanDB filament {want['id']} field {key!r}: {want.get(key)!r} -> {got.get(key)!r}")
+    out_materials = {m["material"]: m for m in materials}
+    for want in sdb_materials:
+        got = out_materials.get(want["material"])
+        if got is None:
+            problems.append(f"SpoolmanDB material {want['material']!r} missing from output")
+        elif got != want:
+            problems.append(f"SpoolmanDB material {want['material']!r} changed: {want!r} -> {got!r}")
+    return problems
+
+
+def load_state(out_dir: Path) -> dict[str, Any]:
+    """The state recorded by the last successful publish, or {} if none/unreadable."""
+    try:
+        state = json.loads((out_dir / STATE_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def spoolmandb_hash(sdb_filaments: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> str:
+    """Content hash of the raw SpoolmanDB data (key order and whitespace independent)."""
+    canonical = json.dumps([sdb_filaments, sdb_materials], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO-8601 timestamp (a trailing Z is accepted) into an aware datetime, else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def check_source_shrink(prev_state: dict[str, Any], sdb_count: int, ofd_count: int) -> list[str]:
+    """Problems for each source that fell under MIN_RETAINED_FRACTION of its last good count."""
+    last = prev_state.get("counts") or {}
+    problems = []
+    for label, now_count, key in (("SpoolmanDB", sdb_count, "spoolmandb_filaments"), ("OFD", ofd_count, "ofd_filaments")):
+        if below_floor(now_count, last.get(key)):
+            problems.append(f"{label} returned {now_count} filaments vs {last[key]} on the last good fetch")
+    return problems
+
+
+def build_state(
+    prev_state: dict[str, Any],
+    now: datetime,
+    ofd: dict[str, Any],
+    sdb_filaments: list[dict[str, Any]],
+    sdb_materials: list[dict[str, Any]],
+    ofd_count: int,
+) -> dict[str, Any]:
+    """The state to record after a successful publish; *_changed_at only moves when the value does."""
+    stamp = now.isoformat(timespec="seconds")
+    version = ofd.get("version")
+    content_hash = spoolmandb_hash(sdb_filaments, sdb_materials)
+    version_same = prev_state.get("ofd_version") == version and prev_state.get("ofd_version_changed_at")
+    hash_same = prev_state.get("spoolmandb_hash") == content_hash and prev_state.get("spoolmandb_changed_at")
+    return {
+        "run_at": stamp,
+        "ofd_version": version,
+        "ofd_generated_at": ofd.get("generated_at"),
+        "ofd_version_changed_at": prev_state["ofd_version_changed_at"] if version_same else stamp,
+        "spoolmandb_hash": content_hash,
+        "spoolmandb_changed_at": prev_state["spoolmandb_changed_at"] if hash_same else stamp,
+        "counts": {
+            "spoolmandb_filaments": len(sdb_filaments),
+            "spoolmandb_materials": len(sdb_materials),
+            "ofd_filaments": ofd_count,
+        },
+    }
+
+
+def check_ofd_stalled(ofd: dict[str, Any], prev_state: dict[str, Any], now: datetime) -> list[str]:
+    """Warnings if OFD's export has not advanced for OFD_STALE_AFTER.
+
+    OFD's own `generated_at` is authoritative when present. Without it we can only fall back to
+    when this tool first saw the current `version`.
+    """
+    generated = parse_timestamp(ofd.get("generated_at"))
+    if generated is not None:
+        age, basis = now - generated, f"generated_at {ofd['generated_at']}"
+    elif prev_state.get("ofd_version") == ofd.get("version") and parse_timestamp(prev_state.get("ofd_version_changed_at")):
+        age, basis = now - parse_timestamp(prev_state["ofd_version_changed_at"]), f"version {ofd.get('version')} unchanged since first seen"  # type: ignore[operator]
+    else:
+        return []
+    if age > OFD_STALE_AFTER:
+        return [f"OFD looks stalled: {basis} is {age.days} days old (limit {OFD_STALE_AFTER.days})"]
+    return []
+
+
+def write_state(out_dir: Path, state: dict[str, Any]) -> None:
+    """Write the state file atomically (temp file in the same dir, then rename)."""
+    fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{STATE_FILE}.")
+    with os.fdopen(fd, "w") as fh:
+        json.dump(state, fh, indent=2)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, out_dir / STATE_FILE)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    fetcher: Callable[[str], bytes] | None = None,
+    now: datetime | None = None,
+) -> int:
     """Fetch both sources, merge, sanity-check, and publish.
 
-    `argv` defaults to sys.argv[1:]; `fetcher` replaces the network download (used by tests).
+    `argv` defaults to sys.argv[1:]; `fetcher` replaces the network download and `now` the clock (both used by tests).
     """
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output directory (default {DEFAULT_OUT})")
@@ -363,6 +523,7 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
     if args.from_ofd_file is not None:
         fetcher = local_fetcher(args.from_ofd_file, args.from_sdb_dir)
     fetch_source = fetcher or fetch
+    now = now or datetime.now(UTC)
 
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -375,10 +536,11 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
         ofd = json.loads(fetch_source(OFD_URL))
     except Exception as exc:  # network / parse failure: keep the last good catalog
         log.error("fetch failed, leaving existing catalog untouched: %s", exc)
-        return 2
+        return EXIT_FETCH_FAILED
     log.info("SpoolmanDB: %d filaments, %d materials; OFD dataset %s", len(sdb_filaments), len(sdb_materials), ofd.get("version"))
 
     ofd_filaments = convert_ofd(ofd, args.include_discontinued)
+    sdb_raw = copy.deepcopy((sdb_filaments, sdb_materials))  # before the brand-spelling rewrite below
 
     # One spelling per brand in the dropdown ("SUNLU" vs "Sunlu"): the first seen
     # wins, and SpoolmanDB is seen first.
@@ -394,7 +556,7 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
     ids = [f["id"] for f in filaments]
     if len(ids) != len(set(ids)):
         log.error("duplicate ids in merged catalog; refusing to publish")
-        return 3
+        return EXIT_DUPLICATE_IDS
 
     # Guard against a broken upstream silently emptying the dropdown: refuse to
     # shrink below half of what is currently published.
@@ -406,19 +568,39 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
             exc,
         )
         return EXIT_CORRUPT_BASELINE
-    if prev is not None and len(filaments) < prev // 2:
+    if below_floor(len(filaments), prev):
         log.error("merged catalog has %d entries vs %d published; refusing to shrink by >50%%", len(filaments), prev)
-        return 4
+        return EXIT_CATALOG_SHRANK
 
     materials = merge_materials(sdb_materials, filaments)
     brands = len({f["manufacturer"] for f in filaments})
     log.info("merged: %d filaments across %d manufacturers", len(filaments), brands)
 
+    # Drift checks. Hard guards first; they also run on --dry-run because they only read.
+    prev_state = load_state(args.out)
+    missing = check_spoolmandb_superset(sdb_raw[0], sdb_raw[1], filaments, materials)
+    for problem in missing:
+        log.error("coverage: %s", problem)
+    if missing:
+        log.error("output is not a superset of SpoolmanDB; refusing to publish")
+        return EXIT_SPOOLMANDB_NOT_SUPERSET
+    shrunk = check_source_shrink(prev_state, len(sdb_filaments), len(ofd_filaments))
+    for problem in shrunk:
+        log.error("source shrink: %s", problem)
+    if shrunk:
+        log.error("a source shrank by more than %d%%; refusing to publish", round((1 - MIN_RETAINED_FRACTION) * 100))
+        return EXIT_SOURCE_SHRANK
+    warnings = check_ofd_stalled(ofd, prev_state, now)
+    for warning in warnings:
+        log.warning("%s", warning)
+    exit_code = EXIT_PUBLISHED_WITH_WARNINGS if warnings else 0
+
     if args.dry_run:
         log.info("dry run: nothing written")
-        return 0
+        return exit_code
     publish(args.out, {"filaments.json": filaments, "materials.json": materials})
-    return 0
+    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments)))
+    return exit_code
 
 
 if __name__ == "__main__":

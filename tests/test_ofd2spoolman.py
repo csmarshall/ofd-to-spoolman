@@ -6,10 +6,12 @@ import json
 import os
 import stat
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from conftest import FIXTURE_NOW
 
 import ofd2spoolman
 from ofd2spoolman import display_name, norm, norm_hex, pick_temp
@@ -213,7 +215,7 @@ class TestMain:
     def test_cli_reads_fixtures_from_disk(self, tmp_path: Path) -> None:
         fixtures = Path(__file__).parent / "fixtures"
         argv = ["--out", str(tmp_path), "--from-ofd-file", str(fixtures / "ofd_all.json"), "--from-sdb-dir", str(fixtures / "sdb")]
-        assert ofd2spoolman.main(argv) == 0
+        assert ofd2spoolman.main(argv, now=FIXTURE_NOW) == 0
         assert len(load(tmp_path)) == 10
 
     def test_disk_sources_options_must_pair(self, tmp_path: Path) -> None:
@@ -307,7 +309,7 @@ class TestGuards:
 class TestPublish:
     def test_no_temp_files_left_and_mode_0644(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json", "state.json"]
         for p in tmp_path.iterdir():
             assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
@@ -575,3 +577,157 @@ class TestPublishAtomicPair:
             (tmp_path / n).write_text("x")
         ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
         assert sorted(p.name for p in tmp_path.iterdir()) == sorted([*keep, "filaments.json", "materials.json"])
+
+
+SDB_F = ofd2spoolman.SPOOLMANDB_URL + "filaments.json"
+SDB_M = ofd2spoolman.SPOOLMANDB_URL + "materials.json"
+
+
+def with_sdb(
+    sources: dict[str, bytes], filaments: list[dict[str, Any]] | None = None, materials: list[dict[str, Any]] | None = None
+) -> dict[str, bytes]:
+    """Copy of `sources` with SpoolmanDB filaments/materials replaced."""
+    out = dict(sources)
+    if filaments is not None:
+        out[SDB_F] = json.dumps(filaments).encode()
+    if materials is not None:
+        out[SDB_M] = json.dumps(materials).encode()
+    return out
+
+
+def write_state(out: Path, **fields: Any) -> None:
+    out.mkdir(exist_ok=True)
+    (out / "state.json").write_text(json.dumps(fields))
+
+
+class TestSpoolmanDbSuperset:
+    sdb: ClassVar[list[dict[str, Any]]] = [{"id": "a", "manufacturer": "Sunlu", "name": "X", "material": "PLA", "density": 1.24}]
+    mats: ClassVar[list[dict[str, Any]]] = [{"material": "PLA", "density": 1.24}]
+
+    def test_identical_passes(self) -> None:
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, self.mats) == []
+
+    def test_brand_respelling_is_allowed(self) -> None:
+        out = [dict(self.sdb[0], manufacturer="SUNLU")]
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats) == []
+
+    def test_missing_filament_is_reported(self) -> None:
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, [], self.mats)
+
+    def test_changed_field_is_reported(self) -> None:
+        out = [dict(self.sdb[0], density=9.9)]
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats)
+
+    def test_different_brand_is_reported(self) -> None:
+        out = [dict(self.sdb[0], manufacturer="Other")]
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats)
+
+    def test_missing_material_is_reported(self) -> None:
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, [])
+
+    def test_changed_material_is_reported(self) -> None:
+        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, [{"material": "PLA", "density": 2}])
+
+    def test_end_to_end_good_fixtures_pass_despite_brand_unification(self, run: RunFn, tmp_path: Path) -> None:
+        # the fixtures have Sunlu (SpoolmanDB) vs SUNLU (OFD): the rewrite must not trip the guard
+        assert run(tmp_path) == 0
+
+    def test_end_to_end_violation_exits_5_and_writes_nothing(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # simulate a merge bug that drops a SpoolmanDB entry
+        real_merge = ofd2spoolman.merge_materials
+        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda m, f: real_merge(m, f)[1:])
+        assert run(tmp_path / "out", payloads=sources) == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
+        assert not (tmp_path / "out").exists()
+
+    def test_runs_on_dry_run_too(self, run: RunFn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_merge = ofd2spoolman.merge_materials
+        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda m, f: real_merge(m, f)[1:])
+        assert run(tmp_path, "--dry-run") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
+
+
+class TestSourceShrink:
+    def test_ofd_collapse_refuses(self, run: RunFn, tmp_path: Path) -> None:
+        write_state(tmp_path, counts={"spoolmandb_filaments": 2, "ofd_filaments": 100})
+        assert run(tmp_path) == ofd2spoolman.EXIT_SOURCE_SHRANK
+        assert not (tmp_path / "filaments.json").exists()
+
+    def test_spoolmandb_collapse_refuses(self, run: RunFn, tmp_path: Path) -> None:
+        write_state(tmp_path, counts={"spoolmandb_filaments": 100, "ofd_filaments": 9})
+        assert run(tmp_path) == ofd2spoolman.EXIT_SOURCE_SHRANK
+
+    def test_normal_fluctuation_passes(self, run: RunFn, tmp_path: Path) -> None:
+        # 9 OFD entries now vs 12 before is a 25% drop: allowed
+        write_state(tmp_path, counts={"spoolmandb_filaments": 2, "ofd_filaments": 12})
+        assert run(tmp_path) == 0
+
+    def test_exactly_at_threshold_passes(self) -> None:
+        assert ofd2spoolman.check_source_shrink({"counts": {"spoolmandb_filaments": 4, "ofd_filaments": 18}}, 2, 9) == []
+
+    def test_no_baseline_passes(self) -> None:
+        assert ofd2spoolman.check_source_shrink({}, 0, 0) == []
+
+    def test_runs_on_dry_run_too(self, run: RunFn, tmp_path: Path) -> None:
+        write_state(tmp_path, counts={"spoolmandb_filaments": 2, "ofd_filaments": 100})
+        assert run(tmp_path, "--dry-run") == ofd2spoolman.EXIT_SOURCE_SHRANK
+
+
+class TestStateAndFreshness:
+    def test_state_recorded_on_publish(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert state["ofd_version"] == "2026.10.13"
+        assert state["ofd_generated_at"] == "2026-10-13T03:01:57Z"
+        assert state["run_at"] == "2026-10-13T04:01:57+00:00"
+        assert state["counts"]["spoolmandb_filaments"] == 2
+        assert state["counts"]["ofd_filaments"] == 9
+        assert len(state["spoolmandb_hash"]) == 64
+
+    def test_dry_run_writes_no_state(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path, "--dry-run") == 0
+        assert list(tmp_path.iterdir()) == []
+
+    def test_refused_run_keeps_old_state(self, run: RunFn, tmp_path: Path) -> None:
+        write_state(tmp_path, counts={"spoolmandb_filaments": 2, "ofd_filaments": 100})
+        before = (tmp_path / "state.json").read_bytes()
+        assert run(tmp_path) != 0
+        assert (tmp_path / "state.json").read_bytes() == before
+
+    def test_changed_at_only_moves_on_change(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        first = json.loads((tmp_path / "state.json").read_text())
+        later = FIXTURE_NOW + timedelta(hours=5)
+        assert run(tmp_path, now=later) == 0
+        second = json.loads((tmp_path / "state.json").read_text())
+        assert second["run_at"] != first["run_at"]
+        assert second["ofd_version_changed_at"] == first["ofd_version_changed_at"]
+        assert second["spoolmandb_changed_at"] == first["spoolmandb_changed_at"]
+        sdb = json.loads(sources[SDB_F])
+        sdb[0]["density"] = 1.25
+        assert run(tmp_path, now=later + timedelta(hours=5), payloads=with_sdb(sources, filaments=sdb)) == 0
+        third = json.loads((tmp_path / "state.json").read_text())
+        assert third["spoolmandb_hash"] != first["spoolmandb_hash"]
+        assert third["spoolmandb_changed_at"] == "2026-10-13T14:01:57+00:00"
+        assert third["ofd_version_changed_at"] == first["ofd_version_changed_at"]
+
+    def test_ofd_stalled_warns_but_still_publishes(self, run: RunFn, tmp_path: Path) -> None:
+        code = run(tmp_path, now=FIXTURE_NOW + ofd2spoolman.OFD_STALE_AFTER + timedelta(days=1))
+        assert code == ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS == 10
+        assert len(load(tmp_path)) == 10
+        assert (tmp_path / "state.json").exists()
+
+    def test_ofd_fresh_is_quiet(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path, now=FIXTURE_NOW + ofd2spoolman.OFD_STALE_AFTER - timedelta(hours=2)) == 0
+
+    def test_stalled_fallback_uses_first_seen_version_when_no_generated_at(self) -> None:
+        prev = {"ofd_version": "v1", "ofd_version_changed_at": FIXTURE_NOW.isoformat()}
+        old = FIXTURE_NOW + timedelta(days=4)
+        assert ofd2spoolman.check_ofd_stalled({"version": "v1"}, prev, old)
+        assert not ofd2spoolman.check_ofd_stalled({"version": "v2"}, prev, old)  # version advanced
+        assert not ofd2spoolman.check_ofd_stalled({"version": "v1"}, {}, old)  # nothing to compare
+
+    def test_exit_codes_are_distinct_and_warning_code_is_not_a_failure_code(self) -> None:
+        failures = [2, 3, 4, ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET, ofd2spoolman.EXIT_SOURCE_SHRANK]
+        assert len(set(failures)) == len(failures)
+        assert ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS not in failures
