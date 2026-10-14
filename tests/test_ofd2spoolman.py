@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from collections.abc import Callable
 from pathlib import Path
@@ -239,6 +240,49 @@ class TestGuards:
         self.seed(tmp_path, 20)  # 10 is not < 20 // 2
         assert run(tmp_path) == 0
         assert len(load(tmp_path)) == 10
+
+    def test_missing_published_file_is_first_run_and_publishes(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        assert len(load(tmp_path)) == 10
+
+    @pytest.mark.parametrize(
+        "content",
+        [b"", b"{not json", b'{"a": 1}', b'"text"', b"null", b"[]"],
+        ids=["empty", "garbage", "json-object", "json-string", "json-null", "empty-list"],
+    )
+    def test_corrupt_published_file_exits_7_and_leaves_files_untouched(
+        self, run: RunFn, tmp_path: Path, content: bytes, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        (tmp_path / "filaments.json").write_bytes(content)
+        (tmp_path / "materials.json").write_text("[]")
+        assert run(tmp_path) == 7
+        assert (tmp_path / "filaments.json").read_bytes() == content
+        assert (tmp_path / "materials.json").read_text() == "[]"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
+        errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        assert any(str(tmp_path / "filaments.json") in m and "delete" in m for m in errors)
+
+    def test_corrupt_published_file_is_reported_by_dry_run_too(self, run: RunFn, tmp_path: Path) -> None:
+        (tmp_path / "filaments.json").write_bytes(b"")
+        assert run(tmp_path, "--dry-run") == 7
+        assert (tmp_path / "filaments.json").read_bytes() == b""
+
+    def test_deleting_the_corrupt_file_recovers(self, run: RunFn, tmp_path: Path) -> None:
+        (tmp_path / "filaments.json").write_bytes(b"")
+        assert run(tmp_path) == 7
+        (tmp_path / "filaments.json").unlink()
+        assert run(tmp_path) == 0
+        assert len(load(tmp_path)) == 10
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+    def test_unreadable_published_file_exits_7(self, run: RunFn, tmp_path: Path) -> None:
+        self.seed(tmp_path, 3)
+        (tmp_path / "filaments.json").chmod(0o000)
+        try:
+            assert run(tmp_path) == 7
+        finally:
+            (tmp_path / "filaments.json").chmod(0o644)
+        assert len(json.loads((tmp_path / "filaments.json").read_text())) == 3
 
 
 class TestPublish:

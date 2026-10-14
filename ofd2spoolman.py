@@ -222,12 +222,33 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
         log.info("published %s (%d entries)", out_dir / name, len(payload))
 
 
+class CorruptBaseline(Exception):
+    """The published filaments.json exists but cannot serve as a shrink-guard baseline."""
+
+
 def previous_count(out_dir: Path) -> int | None:
-    """Entry count of the currently published filaments.json, if any."""
+    """Entry count of the currently published filaments.json.
+
+    None only when no catalog was ever published (the file does not exist).
+    Raises CorruptBaseline when it exists but is unreadable, unparseable, not a
+    JSON list, or an empty list: publishing over it would bypass the shrink guard.
+    """
+    path = out_dir / "filaments.json"
     try:
-        return len(json.loads((out_dir / "filaments.json").read_text()))
-    except (OSError, ValueError):
+        text = path.read_text()
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise CorruptBaseline(f"cannot read {path}: {exc}") from exc
+    try:
+        published = json.loads(text)
+    except ValueError as exc:
+        raise CorruptBaseline(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(published, list):
+        raise CorruptBaseline(f"{path} is not a JSON list")
+    if not published:
+        raise CorruptBaseline(f"{path} is an empty list")
+    return len(published)
 
 
 def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | None = None) -> int:
@@ -283,8 +304,15 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
 
     # Guard against a broken upstream silently emptying the dropdown: refuse to
     # shrink below half of what is currently published.
-    prev = previous_count(args.out)
-    if prev and len(filaments) < prev // 2:
+    try:
+        prev = previous_count(args.out)
+    except CorruptBaseline as exc:
+        log.error(
+            "published catalog is unusable as a baseline, refusing to publish: %s; if it is really bad, delete it to allow a fresh publish",
+            exc,
+        )
+        return 7
+    if prev is not None and len(filaments) < prev // 2:
         log.error("merged catalog has %d entries vs %d published; refusing to shrink by >50%%", len(filaments), prev)
         return 4
 
