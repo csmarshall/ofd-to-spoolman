@@ -30,6 +30,7 @@ Env:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gzip
 import json
 import logging
@@ -211,15 +212,74 @@ def merge_materials(sdb_materials: list[dict[str, Any]], filaments: list[dict[st
 
 
 def publish(out_dir: Path, files: dict[str, Any]) -> None:
-    """Write each file atomically (temp file in the same dir, then rename)."""
+    """Publish the files as a pair: stage every temp file completely, then rename them back to back.
+
+    Two renames are still not one atomic operation. If the process dies between them the pair is
+    mismatched; if the second rename merely fails, the first file is restored from a hard link to
+    its previous inode taken just before the rename (best effort, logged either way).
+    Files are renamed in REVERSE of the given order: callers pass filaments first, so materials
+    land first. Spoolman resolves each filament's material by name, so a new materials.json with
+    the old filaments.json is harmless (a superset), whereas new filaments pointing at materials
+    the old materials.json lacks would not be.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    for name, payload in files.items():
-        fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{name}.")
-        with os.fdopen(fd, "w") as fh:
-            json.dump(payload, fh, separators=(",", ":"))
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, out_dir / name)
-        log.info("published %s (%d entries)", out_dir / name, len(payload))
+    staged: dict[str, str] = {}  # name -> temp path
+    backups: dict[str, str] = {}  # name -> hard link to the previous file
+    try:
+        for name, payload in files.items():
+            fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{name}.")
+            staged[name] = tmp
+            with os.fdopen(fd, "w") as fh:
+                json.dump(payload, fh, separators=(",", ":"))
+            os.chmod(tmp, 0o644)
+
+        for name in staged:
+            backup = f"{staged[name]}.old"
+            try:
+                os.link(out_dir / name, backup)
+                backups[name] = backup
+            except OSError:
+                pass  # no previous file (first run) or links unsupported: nothing to restore
+
+        renamed: list[str] = []
+        for name in reversed(list(staged)):
+            try:
+                os.replace(staged[name], out_dir / name)
+            except OSError:
+                if renamed:
+                    _restore_after_partial_publish(out_dir, renamed, backups, name)
+                raise
+            staged.pop(name)
+            renamed.append(name)
+        for name, payload in files.items():
+            log.info("published %s (%d entries)", out_dir / name, len(payload))
+    finally:
+        for leftover in [*staged.values(), *backups.values()]:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(leftover)
+
+
+def _restore_after_partial_publish(out_dir: Path, renamed: list[str], backups: dict[str, str], failed: str) -> None:
+    """The pair is half-published: put the already-renamed files back, or log exactly what state remains."""
+    for name in renamed:
+        try:
+            if name in backups:
+                os.replace(backups[name], out_dir / name)
+                backups.pop(name)
+            else:
+                os.unlink(out_dir / name)  # first-ever publish: no previous file to go back to
+        except OSError as exc:
+            log.error(
+                "publish of %s failed after %s was already replaced and could not be restored (%s): "
+                "the catalog pair is now a MISMATCH (new %s, old %s); rerun to repair",
+                failed,
+                name,
+                exc,
+                name,
+                failed,
+            )
+            return
+    log.error("publish of %s failed after %s was replaced; %s restored to its previous version", failed, renamed, renamed)
 
 
 def previous_count(out_dir: Path) -> int | None:

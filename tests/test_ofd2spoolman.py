@@ -6,7 +6,7 @@ import json
 import stat
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -289,3 +289,135 @@ class TestCli:
         from conftest import fetcher_for
 
         assert ofd2spoolman.main(["--o", str(tmp_path), "--dry-run"], fetcher=fetcher_for(sources)) == 0
+
+
+class TestPublishAtomicPair:
+    """publish() stages both temps, then renames back to back; every leftover is cleaned up."""
+
+    OLD: ClassVar[dict[str, str]] = {"filaments.json": "old-f", "materials.json": "old-m"}
+
+    def _seed(self, d: Path) -> None:
+        for name, text in self.OLD.items():
+            (d / name).write_text(text)
+
+    def _assert_old_pair(self, d: Path) -> None:
+        assert {p.name: p.read_text() for p in d.iterdir()} == self.OLD
+
+    def test_clean_publish_leaves_exactly_the_pair_mode_0644(self, tmp_path: Path) -> None:
+        self._seed(tmp_path)
+        ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2, 3]})
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
+        assert (tmp_path / "filaments.json").read_text() == "[1]"
+        assert (tmp_path / "materials.json").read_text() == "[2,3]"
+        for p in tmp_path.iterdir():
+            assert stat.S_IMODE(p.stat().st_mode) == 0o644
+
+    def test_json_dump_failure_leaves_no_temp_and_old_pair(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._seed(tmp_path)
+        real_dump = json.dump
+        calls = []
+
+        def flaky_dump(*args: Any, **kwargs: Any) -> None:
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("boom")
+            real_dump(*args, **kwargs)
+
+        monkeypatch.setattr(ofd2spoolman.json, "dump", flaky_dump)
+        with pytest.raises(RuntimeError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        self._assert_old_pair(tmp_path)
+
+    def test_first_json_dump_failure_leaves_no_temp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._seed(tmp_path)
+
+        def bad_dump(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(ofd2spoolman.json, "dump", bad_dump)
+        with pytest.raises(RuntimeError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        self._assert_old_pair(tmp_path)
+
+    def test_temp_creation_failure_cleans_up_earlier_temp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._seed(tmp_path)
+        real_mkstemp = ofd2spoolman.tempfile.mkstemp
+        calls = []
+
+        def flaky_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("no space")
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(ofd2spoolman.tempfile, "mkstemp", flaky_mkstemp)
+        with pytest.raises(OSError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        self._assert_old_pair(tmp_path)
+
+    def test_first_rename_failure_leaves_no_temp_and_old_pair(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._seed(tmp_path)
+
+        def bad_replace(src: Any, dst: Any) -> None:
+            raise OSError("rename failed")
+
+        monkeypatch.setattr(ofd2spoolman.os, "replace", bad_replace)
+        with pytest.raises(OSError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        self._assert_old_pair(tmp_path)
+
+    def test_second_rename_failure_restores_first_logs_error_no_temp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._seed(tmp_path)
+        real_replace = ofd2spoolman.os.replace
+        calls = []
+
+        def flaky_replace(src: Any, dst: Any) -> None:
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("rename failed")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(ofd2spoolman.os, "replace", flaky_replace)
+        with caplog.at_level("ERROR"), pytest.raises(OSError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        assert errors
+        assert "filaments.json" in errors[0] and "materials.json" in errors[0]
+        # Rollback does its own os.replace (call 3), so the old pair is back and nothing else remains.
+        self._assert_old_pair(tmp_path)
+
+    def test_second_rename_failure_with_failed_restore_logs_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._seed(tmp_path)
+        real_replace = ofd2spoolman.os.replace
+        calls = []
+
+        def flaky_replace(src: Any, dst: Any) -> None:
+            calls.append(1)
+            if len(calls) >= 2:
+                raise OSError("rename failed")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(ofd2spoolman.os, "replace", flaky_replace)
+        with caplog.at_level("ERROR"), pytest.raises(OSError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        assert any("MISMATCH" in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
+
+    def test_first_ever_publish_second_rename_failure_removes_lone_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        real_replace = ofd2spoolman.os.replace
+        calls = []
+
+        def flaky_replace(src: Any, dst: Any) -> None:
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("rename failed")
+            real_replace(src, dst)
+
+        monkeypatch.setattr(ofd2spoolman.os, "replace", flaky_replace)
+        with pytest.raises(OSError):
+            ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        assert list(tmp_path.iterdir()) == []
