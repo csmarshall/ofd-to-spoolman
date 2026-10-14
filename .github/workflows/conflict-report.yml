@@ -111,6 +111,7 @@ jobs:
           name: conflicts-full
           path: report/conflicts-full.md
           retention-days: 90
+          overwrite: true
           if-no-files-found: ignore
 
       # Last and success-only on purpose: if the issue or comment step fails (locked issue, API error) the state
@@ -123,3 +124,4 @@ jobs:
           name: conflict-state
           path: report/state.json
           retention-days: 90
+          overwrite: true

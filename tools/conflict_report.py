@@ -226,16 +226,33 @@ def new_conflicts(conflicts: list[Conflict], previous_keys: set[str]) -> list[Co
 MARKDOWN_SPECIALS = "\\`*_{}[]()<>|~&!"
 
 
+# One regex pass: replacing @ and # in sequence would re-replace the '#' inside the '&#64;' entity.
+NEUTRALISE_RE = re.compile(r"@|#|://|www\.|gh-(?=\d)", re.IGNORECASE)
+
+
+def neutralise(match: re.Match[str]) -> str:
+    """HTML-entity form of one mention / issue-ref / autolink trigger, keeping the original letters."""
+    token = match.group()
+    if token == "@":
+        return "&#64;"
+    if token == "#":
+        return "&#35;"
+    if token == "://":
+        return ":&#47;&#47;"
+    return token[:-1] + ("&#46;" if token.endswith(".") else "&#45;")
+
+
 def clean(text: Any) -> str:
     """Make an upstream string inert in GitHub markdown.
 
     Control/format/line-separator characters (including \\r) become spaces, markdown syntax is backslash-escaped,
-    and @ (mentions), # (issue refs), `://` and `www.` (autolinks) are replaced by HTML entities after escaping.
+    and @ (mentions), # and GH-123 (issue refs), `://` and `www.` (autolinks) are replaced by HTML entities after escaping.
     """
+    if text is None:
+        return ""
     flattened = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in str(text))
     escaped = "".join("\\" + ch if ch in MARKDOWN_SPECIALS else ch for ch in " ".join(flattened.split()))
-    escaped = escaped.replace("@", "&#64;").replace("#", "&#35;").replace("://", ":&#47;&#47;")
-    return re.sub(r"(?i)www\.", "www&#46;", escaped)
+    return NEUTRALISE_RE.sub(neutralise, escaped)
 
 
 def render_line(c: Conflict) -> str:
@@ -300,6 +317,10 @@ def render_digest(
     return head + sections + (truncation_notice(omitted, full_report_url) if omitted else "")
 
 
+def dataset_label(version: str | None) -> str:
+    return clean(version) if version else "(version unknown)"
+
+
 def render_issue_body(
     conflicts: list[Conflict],
     new_count: int,
@@ -309,11 +330,14 @@ def render_issue_body(
     budget: int | None = BODY_BUDGET_BYTES,
 ) -> str:
     counts = ", ".join(f"{f}: {n}" for f in FIELDS if (n := sum(1 for c in conflicts if c["field"] == f)))
-    status = (
-        "First run: everything below is the baseline." if baseline else f"{new_count} new since the previous run (posted as a comment)."
-    )
+    if baseline:
+        status = "First run: everything below is the baseline."
+    elif new_count:
+        status = f"{new_count} new since the previous run (posted as a comment)."
+    else:
+        status = "No new conflicts since the previous run."
     intro = (
-        f"Updated by the conflict-report workflow against OFD dataset {clean(ofd_version)}. "
+        f"Updated by the conflict-report workflow against OFD dataset {dataset_label(ofd_version)}. "
         f"{len(conflicts)} current conflict(s) ({counts or 'none'}). {status}\n\n"
         "Products present in both catalogs (matched with the converter's own dedupe key) whose values disagree beyond a small tolerance. "
         "A missing value on either side is not a conflict. `size` means the two sides list entirely different weight/diameter combinations "
@@ -326,7 +350,9 @@ def render_issue_body(
 def render_new_comment(
     new: list[Conflict], ofd_version: str | None, full_report_url: str | None = None, budget: int | None = BODY_BUDGET_BYTES
 ) -> str:
-    return render_digest(f"## {len(new)} new conflict(s)", f"Found against OFD dataset {clean(ofd_version)}.", new, full_report_url, budget)
+    return render_digest(
+        f"## {len(new)} new conflict(s)", f"Found against OFD dataset {dataset_label(ofd_version)}.", new, full_report_url, budget
+    )
 
 
 @dataclass
