@@ -1,0 +1,8 @@
+LICENSE
+README.md
+pyproject.toml
+ofd_to_spoolman.egg-info/PKG-INFO
+ofd_to_spoolman.egg-info/SOURCES.txt
+ofd_to_spoolman.egg-info/dependency_links.txt
+ofd_to_spoolman.egg-info/requires.txt
+ofd_to_spoolman.egg-info/top_level.txt

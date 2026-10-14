@@ -1,0 +1,37 @@
+---
+services:
+  spoolman:
+    image: ghcr.io/donkie/spoolman:latest
+    container_name: spoolman
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/Chicago
+      - SPOOLMAN_PORT=8000
+      # Served at https://k.wozi.com/spoolman (kamek proxy, Authentik-gated) and
+      # http://192.168.1.10:7912/spoolman on the LAN (unauthenticated — Moonraker
+      # on the U1 talks to this directly; it cannot follow an SSO redirect).
+      - SPOOLMAN_BASE_PATH=/spoolman
+      - SPOOLMAN_ALLOWED_HOSTS=k.wozi.com,192.168.1.10,rosa,rosa.home.wozi.com,localhost
+      # Filament catalog = SpoolmanDB + Open Filament Database, merged daily by
+      # ofd2spoolman.py (cron) into /opt/sw/spoolman/catalog, served by `catalog`.
+      - EXTERNAL_DB_URL=http://catalog/
+      - EXTERNAL_DB_NAME=SpoolmanDB + OFD
+    volumes:
+      - /opt/sw/spoolman:/home/app/.local/share/spoolman
+    ports:
+      - 7912:8000
+    labels:
+      - "diun.enable=true"
+    depends_on:
+      - catalog
+    restart: unless-stopped
+
+  catalog:
+    image: nginx:alpine
+    container_name: spoolman-catalog
+    volumes:
+      - /opt/sw/spoolman/catalog:/usr/share/nginx/html:ro
+    labels:
+      - "diun.enable=true"
+    restart: unless-stopped
