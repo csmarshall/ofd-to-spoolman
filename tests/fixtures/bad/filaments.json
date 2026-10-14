@@ -1,0 +1,23 @@
+[
+  {
+    "id": "bad_one",
+    "manufacturer": "Sunlu",
+    "name": "Black",
+    "material": "PLA",
+    "weight": 1000.0,
+    "spool_weight": 200,
+    "spool_type": null,
+    "diameter": 1.75,
+    "color_hex": "000000",
+    "color_hexes": null,
+    "extruder_temp": 210,
+    "extruder_temp_range": null,
+    "bed_temp": 60,
+    "bed_temp_range": null,
+    "finish": "shiny",
+    "multi_color_direction": null,
+    "pattern": null,
+    "translucent": false,
+    "glow": false
+  }
+]
