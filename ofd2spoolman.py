@@ -30,7 +30,6 @@ Env:
 from __future__ import annotations
 
 import argparse
-import contextlib
 import gzip
 import json
 import logging
@@ -211,20 +210,37 @@ def merge_materials(sdb_materials: list[dict[str, Any]], filaments: list[dict[st
     return sdb_materials + added
 
 
+def _sweep_stale_temps(out_dir: Path, names: Sequence[str]) -> None:
+    """Remove temp/backup files a previously SIGKILLed publish left behind (exact mkstemp pattern only)."""
+    for name in names:
+        stale = re.compile(rf"^\.{re.escape(name)}\.[A-Za-z0-9_]{{8}}(\.old)?$")
+        for entry in out_dir.iterdir():
+            if stale.match(entry.name):
+                try:
+                    entry.unlink()
+                    log.warning("removed stale leftover %s", entry)
+                except OSError as exc:
+                    log.warning("could not remove stale leftover %s: %s", entry, exc)
+
+
 def publish(out_dir: Path, files: dict[str, Any]) -> None:
     """Publish the files as a pair: stage every temp file completely, then rename them back to back.
 
     Two renames are still not one atomic operation. If the process dies between them the pair is
-    mismatched; if the second rename merely fails, the first file is restored from a hard link to
-    its previous inode taken just before the rename (best effort, logged either way).
+    mismatched; if the second rename fails (or is interrupted), the first file is restored from a
+    hard link to its previous inode taken just before the renames (best effort, logged either way).
+    A file that was live is never deleted: if it cannot be restored, the new one stays and ERROR says so.
     Files are renamed in REVERSE of the given order: callers pass filaments first, so materials
-    land first. Spoolman resolves each filament's material by name, so a new materials.json with
-    the old filaments.json is harmless (a superset), whereas new filaments pointing at materials
-    the old materials.json lacks would not be.
+    land first. Spoolman resolves each filament's material by name, and new materials with the old
+    filaments only works for materials the old filaments still reference (merge_materials regenerates
+    the set), whereas new filaments pointing at materials the old materials.json lacks would fail.
+    So this order is the less bad one, not a guarantee.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_temps(out_dir, list(files))
     staged: dict[str, str] = {}  # name -> temp path
     backups: dict[str, str] = {}  # name -> hard link to the previous file
+    had_previous: dict[str, bool] = {}
     try:
         for name, payload in files.items():
             fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{name}.")
@@ -238,16 +254,20 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
             try:
                 os.link(out_dir / name, backup)
                 backups[name] = backup
-            except OSError:
-                pass  # no previous file (first run) or links unsupported: nothing to restore
+                had_previous[name] = True
+            except FileNotFoundError:
+                had_previous[name] = False  # first-ever publish: nothing to restore
+            except OSError as exc:
+                had_previous[name] = True  # a live file exists but cannot be backed up
+                log.warning("cannot back up %s (%s); a failed publish will not be rolled back", out_dir / name, exc)
 
         renamed: list[str] = []
         for name in reversed(list(staged)):
             try:
                 os.replace(staged[name], out_dir / name)
-            except OSError:
+            except BaseException:
                 if renamed:
-                    _restore_after_partial_publish(out_dir, renamed, backups, name)
+                    _restore_after_partial_publish(out_dir, renamed, backups, had_previous, name)
                 raise
             staged.pop(name)
             renamed.append(name)
@@ -255,28 +275,41 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
             log.info("published %s (%d entries)", out_dir / name, len(payload))
     finally:
         for leftover in [*staged.values(), *backups.values()]:
-            with contextlib.suppress(FileNotFoundError):
+            try:
                 os.unlink(leftover)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log.warning("could not remove leftover %s: %s", leftover, exc)
 
 
-def _restore_after_partial_publish(out_dir: Path, renamed: list[str], backups: dict[str, str], failed: str) -> None:
-    """The pair is half-published: put the already-renamed files back, or log exactly what state remains."""
+def _restore_after_partial_publish(
+    out_dir: Path, renamed: list[str], backups: dict[str, str], had_previous: dict[str, bool], failed: str
+) -> None:
+    """The pair is half-published: put the already-renamed files back, or log exactly what state remains.
+
+    A backup that could not be restored is dropped from `backups` so cleanup leaves it on disk for recovery.
+    """
     for name in renamed:
         try:
             if name in backups:
                 os.replace(backups[name], out_dir / name)
                 backups.pop(name)
-            else:
+            elif not had_previous[name]:
                 os.unlink(out_dir / name)  # first-ever publish: no previous file to go back to
+            else:
+                raise OSError("no backup of the previous file was possible")
         except OSError as exc:
+            kept = backups.pop(name, None)
             log.error(
                 "publish of %s failed after %s was already replaced and could not be restored (%s): "
-                "the catalog pair is now a MISMATCH (new %s, old %s); rerun to repair",
+                "the catalog pair is now a MISMATCH (new %s, old %s); rerun to repair%s",
                 failed,
                 name,
                 exc,
                 name,
                 failed,
+                f"; previous {name} kept at {kept}" if kept else "",
             )
             return
     log.error("publish of %s failed after %s was replaced; %s restored to its previous version", failed, renamed, renamed)
