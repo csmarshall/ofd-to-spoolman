@@ -374,6 +374,17 @@ def below_floor(count: int, last_good: int | None) -> bool:
     return bool(last_good) and count < int(last_good * MIN_RETAINED_FRACTION)  # type: ignore[operator]
 
 
+def same_value(a: Any, b: Any) -> bool:
+    """Type-aware JSON equality: False is not 0, 1 is not 1.0 (plain == conflates them)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same_value(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same_value(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
 def check_spoolmandb_superset(
     sdb_filaments: list[dict[str, Any]],
     sdb_materials: list[dict[str, Any]],
@@ -394,28 +405,53 @@ def check_spoolmandb_superset(
             problems.append(f"SpoolmanDB filament {want['id']} missing from output")
             continue
         for key in sorted(set(want) | set(got)):
-            same = want.get(key) == got.get(key)
+            same = same_value(want.get(key), got.get(key))
             if key == "manufacturer":
                 same = norm(want.get(key) or "") == norm(got.get(key) or "")
             if not same:
                 problems.append(f"SpoolmanDB filament {want['id']} field {key!r}: {want.get(key)!r} -> {got.get(key)!r}")
-    out_materials = {m["material"]: m for m in materials}
+    # Materials as a multiset: duplicate names must each find their own identical output entry.
+    remaining = list(materials)
     for want in sdb_materials:
-        got = out_materials.get(want["material"])
-        if got is None:
+        match = next((i for i, got in enumerate(remaining) if same_value(want, got)), None)
+        if match is not None:
+            del remaining[match]
+            continue
+        if any(got.get("material") == want["material"] for got in materials):
+            problems.append(f"SpoolmanDB material {want['material']!r} changed or duplicated differently in output: {want!r}")
+        else:
             problems.append(f"SpoolmanDB material {want['material']!r} missing from output")
-        elif got != want:
-            problems.append(f"SpoolmanDB material {want['material']!r} changed: {want!r} -> {got!r}")
     return problems
 
 
 def load_state(out_dir: Path) -> dict[str, Any]:
-    """The state recorded by the last successful publish, or {} if none/unreadable."""
+    """The state recorded by the last successful publish, with anything malformed dropped.
+
+    A corrupt or old-schema file must never crash a run or plant a bogus shrink baseline, so each
+    piece that fails validation is treated as absent (with a WARNING) rather than trusted.
+    """
     try:
-        state = json.loads((out_dir / STATE_FILE).read_text())
-    except (OSError, ValueError):
+        raw = json.loads((out_dir / STATE_FILE).read_text())
+    except OSError:
         return {}
-    return state if isinstance(state, dict) else {}
+    except ValueError:
+        log.warning("%s is not valid JSON; ignoring it", STATE_FILE)
+        return {}
+    if not isinstance(raw, dict):
+        log.warning("%s is not a JSON object; ignoring it", STATE_FILE)
+        return {}
+    state: dict[str, Any] = {}
+    for key in ("run_at", "ofd_version", "ofd_generated_at", "ofd_version_changed_at", "spoolmandb_hash", "spoolmandb_changed_at"):
+        if isinstance(raw.get(key), str):
+            state[key] = raw[key]
+        elif key in raw:
+            log.warning("%s: %r is not a string; ignoring it", STATE_FILE, key)
+    counts = raw.get("counts")
+    if isinstance(counts, dict) and all(type(v) is int and v > 0 for v in counts.values()):
+        state["counts"] = counts
+    elif "counts" in raw:
+        log.warning("%s: 'counts' is not a mapping of positive integers; ignoring all recorded counts", STATE_FILE)
+    return state
 
 
 def spoolmandb_hash(sdb_filaments: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> str:
@@ -481,24 +517,34 @@ def check_ofd_stalled(ofd: dict[str, Any], prev_state: dict[str, Any], now: date
     when this tool first saw the current `version`.
     """
     generated = parse_timestamp(ofd.get("generated_at"))
+    if ofd.get("generated_at") is not None and generated is None:
+        log.warning("OFD generated_at %r is not a parseable timestamp; staleness not checked from it", ofd.get("generated_at"))
+    version = ofd.get("version")
+    first_seen = parse_timestamp(prev_state.get("ofd_version_changed_at"))
+    # A generated_at in the future yields a negative age and never fires; that is deliberate (clock skew is not a stall).
     if generated is not None:
         age, basis = now - generated, f"generated_at {ofd['generated_at']}"
-    elif prev_state.get("ofd_version") == ofd.get("version") and parse_timestamp(prev_state.get("ofd_version_changed_at")):
-        age, basis = now - parse_timestamp(prev_state["ofd_version_changed_at"]), f"version {ofd.get('version')} unchanged since first seen"  # type: ignore[operator]
+    elif version and prev_state.get("ofd_version") == version and first_seen is not None:
+        age, basis = now - first_seen, f"version {version} unchanged since first seen"
     else:
         return []
     if age > OFD_STALE_AFTER:
-        return [f"OFD looks stalled: {basis} is {age.days} days old (limit {OFD_STALE_AFTER.days})"]
+        hours = age.total_seconds() / 3600
+        return [f"OFD looks stalled: {basis} is {hours:.1f} hours old (limit {OFD_STALE_AFTER.total_seconds() / 3600:.0f} hours)"]
     return []
 
 
 def write_state(out_dir: Path, state: dict[str, Any]) -> None:
     """Write the state file atomically (temp file in the same dir, then rename)."""
     fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{STATE_FILE}.")
-    with os.fdopen(fd, "w") as fh:
-        json.dump(state, fh, indent=2)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, out_dir / STATE_FILE)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(state, fh, indent=2)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, out_dir / STATE_FILE)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def main(
@@ -517,7 +563,13 @@ def main(
     # Hidden: read the sources from disk instead of the network (CI schema job).
     ap.add_argument("--from-ofd-file", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--from-sdb-dir", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--now", help=argparse.SUPPRESS)  # pin the clock (ISO-8601); CI fixtures age out otherwise
     args = ap.parse_args(argv)
+    if args.now is not None:
+        pinned = parse_timestamp(args.now)
+        if pinned is None:
+            ap.error("--now must be an ISO-8601 timestamp")
+        now = pinned
     if (args.from_ofd_file is None) != (args.from_sdb_dir is None):
         ap.error("--from-ofd-file and --from-sdb-dir must be given together")
     if args.from_ofd_file is not None:

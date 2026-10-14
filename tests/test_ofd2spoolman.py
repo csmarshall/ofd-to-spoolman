@@ -6,7 +6,7 @@ import json
 import os
 import stat
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -353,7 +353,7 @@ class TestCli:
         """Regression: hidden options must not make `--o` ambiguous with `--out`."""
         from conftest import fetcher_for
 
-        assert ofd2spoolman.main(["--o", str(tmp_path), "--dry-run"], fetcher=fetcher_for(sources)) == 0
+        assert ofd2spoolman.main(["--o", str(tmp_path), "--dry-run", "--now", "2026-10-13T04:00:00Z"], fetcher=fetcher_for(sources)) == 0
 
 
 class TestPublishAtomicPair:
@@ -731,3 +731,136 @@ class TestStateAndFreshness:
         failures = [2, 3, 4, ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET, ofd2spoolman.EXIT_SOURCE_SHRANK]
         assert len(set(failures)) == len(failures)
         assert ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS not in failures
+
+
+class TestNowFlag:
+    def test_hidden_now_pins_the_clock(self, sources: dict[str, bytes], tmp_path: Path) -> None:
+        from conftest import fetcher_for
+
+        argv = ["--out", str(tmp_path), "--dry-run", "--now", "2026-10-13T04:00:00Z"]
+        assert ofd2spoolman.main(argv, fetcher=fetcher_for(sources)) == 0
+
+    def test_far_future_now_is_stalled(self, sources: dict[str, bytes], tmp_path: Path) -> None:
+        """The fixture ages out on the real clock; this is exactly why CI must pin --now."""
+        from conftest import fetcher_for
+
+        argv = ["--out", str(tmp_path), "--dry-run", "--now", "2030-01-01T00:00:00Z"]
+        assert ofd2spoolman.main(argv, fetcher=fetcher_for(sources)) == ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS
+
+    def test_unparseable_now_is_a_usage_error(self, tmp_path: Path) -> None:
+        with pytest.raises(SystemExit) as exc:
+            ofd2spoolman.main(["--out", str(tmp_path), "--now", "yesterday"])
+        assert exc.value.code == 2
+
+
+class TestLoadState:
+    @pytest.mark.parametrize(
+        "content",
+        ["not json", "[1, 2]", "null", '"s"', "42"],
+    )
+    def test_unusable_top_level_is_empty(self, tmp_path: Path, content: str) -> None:
+        (tmp_path / "state.json").write_text(content)
+        assert ofd2spoolman.load_state(tmp_path) == {}
+
+    @pytest.mark.parametrize(
+        "counts",
+        [
+            [1, 2],
+            "abc",
+            {"ofd_filaments": "abc"},
+            {"ofd_filaments": None},
+            {"ofd_filaments": -5},
+            {"ofd_filaments": 0},
+            {"ofd_filaments": True},
+            {"ofd_filaments": 1.5},
+        ],
+    )
+    def test_bad_counts_are_dropped_and_run_survives(
+        self, run: RunFn, tmp_path: Path, counts: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        write_state(tmp_path, counts=counts, ofd_version="old")
+        state = ofd2spoolman.load_state(tmp_path)
+        assert "counts" not in state
+        assert state["ofd_version"] == "old"
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+        assert run(tmp_path) == 0  # no crash, no bogus baseline
+
+    def test_good_counts_survive(self, tmp_path: Path) -> None:
+        write_state(tmp_path, counts={"ofd_filaments": 5, "spoolmandb_filaments": 2})
+        assert ofd2spoolman.load_state(tmp_path)["counts"] == {"ofd_filaments": 5, "spoolmandb_filaments": 2}
+
+    def test_non_string_fields_are_dropped(self, tmp_path: Path) -> None:
+        write_state(tmp_path, ofd_version=5, ofd_version_changed_at=["x"], spoolmandb_hash=None)
+        assert ofd2spoolman.load_state(tmp_path) == {}
+
+
+class TestStalledEdges:
+    def test_none_version_does_not_false_positive(self) -> None:
+        prev = {"ofd_version": None, "ofd_version_changed_at": FIXTURE_NOW.isoformat()}
+        assert ofd2spoolman.check_ofd_stalled({}, prev, FIXTURE_NOW + timedelta(days=30)) == []
+
+    def test_unparseable_generated_at_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        ofd2spoolman.check_ofd_stalled({"version": "v", "generated_at": "garbage"}, {}, FIXTURE_NOW)
+        assert any(r.levelname == "WARNING" and "generated_at" in r.getMessage() for r in caplog.records)
+
+    def test_message_reports_hours(self) -> None:
+        (msg,) = ofd2spoolman.check_ofd_stalled(
+            {"generated_at": "2026-10-13T03:00:00Z"}, {}, FIXTURE_NOW.replace(hour=4) + timedelta(days=3, hours=5)
+        )
+        assert "hours" in msg and "77" not in msg and "78.0" in msg
+
+    def test_offset_and_naive_generated_at(self) -> None:
+        late = datetime(2026, 10, 20, tzinfo=UTC)
+        assert ofd2spoolman.check_ofd_stalled({"generated_at": "2026-10-13T03:00:00+02:00"}, {}, late)
+        assert ofd2spoolman.check_ofd_stalled({"generated_at": "2026-10-13T03:00:00"}, {}, late)  # naive = UTC
+        assert not ofd2spoolman.check_ofd_stalled({"generated_at": "2026-10-13T03:00:00+02:00"}, {}, datetime(2026, 10, 14, tzinfo=UTC))
+
+
+class TestSupersetEdges:
+    def test_duplicate_material_names_do_not_false_fire(self) -> None:
+        mats = [{"material": "PLA", "density": 1.24}, {"material": "PLA", "density": 1.25}]
+        assert ofd2spoolman.check_spoolmandb_superset([], mats, [], list(mats)) == []
+
+    def test_lost_duplicate_material_is_reported(self) -> None:
+        mats = [{"material": "PLA", "density": 1.24}, {"material": "PLA", "density": 1.25}]
+        assert ofd2spoolman.check_spoolmandb_superset([], mats, [], mats[:1])
+
+    def test_bool_is_not_int(self) -> None:
+        sdb = [{"id": "a", "manufacturer": "S", "glow": False}]
+        assert ofd2spoolman.check_spoolmandb_superset(sdb, [], [{"id": "a", "manufacturer": "S", "glow": 0}], [])
+        assert ofd2spoolman.check_spoolmandb_superset(sdb, [], [{"id": "a", "manufacturer": "S", "glow": False}], []) == []
+
+    def test_end_to_end_field_corruption_is_caught(self, run: RunFn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A bug that alters a SpoolmanDB field after the snapshot must fire the guard (kills 'snapshot not deep-copied')."""
+        real_merge = ofd2spoolman.merge_materials
+
+        def corrupting(m: list[dict[str, Any]], f: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            f[0]["density"] = 9.99
+            return real_merge(m, f)
+
+        monkeypatch.setattr(ofd2spoolman, "merge_materials", corrupting)
+        assert run(tmp_path / "out") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
+        assert not (tmp_path / "out").exists()
+
+
+class TestStateEdges:
+    def test_ofd_version_changed_at_advances_on_new_version(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        first = json.loads((tmp_path / "state.json").read_text())
+        newer = json.loads(sources[ofd2spoolman.OFD_URL])
+        newer["version"] = "2026.10.14"
+        newer["generated_at"] = "2026-10-14T03:00:00Z"
+        later = FIXTURE_NOW + timedelta(days=1)
+        assert run(tmp_path, now=later, payloads={**sources, ofd2spoolman.OFD_URL: json.dumps(newer).encode()}) == 0
+        second = json.loads((tmp_path / "state.json").read_text())
+        assert second["ofd_version"] == "2026.10.14"
+        assert second["ofd_version_changed_at"] == later.isoformat(timespec="seconds") != first["ofd_version_changed_at"]
+
+    def test_failed_state_write_leaks_no_temp_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(src: Any, dst: Any) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ofd2spoolman.os, "replace", boom)
+        with pytest.raises(OSError):
+            ofd2spoolman.write_state(tmp_path, {"a": 1})
+        assert list(tmp_path.iterdir()) == []

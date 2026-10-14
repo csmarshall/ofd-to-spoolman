@@ -79,8 +79,9 @@ Code 10 is deliberately far from the failure codes: the run succeeded, but somet
 
 - **Superset guard (5).** Spoolman's `EXTERNAL_DB_URL` replaces its default SpoolmanDB, so a SpoolmanDB entry we lose is gone from the dropdown. Every SpoolmanDB filament id must be in the output with identical fields (manufacturer compared after `norm()`, because brand spelling is deliberately unified across sources), and every SpoolmanDB material must be present unchanged. The comparison uses a deep copy taken before the brand rewrite.
 - **Per-source shrink guard (6).** The SpoolmanDB filament count and the OFD converted-filament count are each compared with the counts recorded at the last successful publish. They may keep at least `MIN_RETAINED_FRACTION` (50%) of that: the same constant as the whole-catalog guard. Normal churn (OFD pruning discontinued items) is a few percent, a broken or empty export loses nearly everything, so anything between separates them. With no state file there is no baseline and the guard stays quiet.
-- **OFD stalled (warning, exit 10).** OFD rebuilds daily. If the dataset's own `generated_at` is more than `OFD_STALE_AFTER` (3 days) old, a WARNING is logged and the run exits 10 after publishing. If `generated_at` is ever absent, the fallback is how long ago this tool first saw the current `version`.
-- **SpoolmanDB freshness: what can and cannot be checked.** SpoolmanDB's published files carry no version or timestamp, so there is no authoritative "upstream changed at" to compare against. Because the catalog is rebuilt from a fresh fetch on every run, upstream-to-catalog lag is bounded by the cron interval by construction, and nothing here can measure it beyond that. What *is* recorded is a content hash of the raw SpoolmanDB data and when this tool first saw that hash (`spoolmandb_changed_at`), for context only. No check fires on it.
+- **OFD stalled (warning, exit 10).** OFD rebuilds daily. If the dataset's own `generated_at` is more than `OFD_STALE_AFTER` (3 days) old, a WARNING is logged and the run exits 10 after publishing. The warning gives the age in hours; an unparseable `generated_at` logs its own WARNING. A `generated_at` in the future never fires (clock skew is not a stall). If `generated_at` is ever absent, the fallback (needs a non-empty `version`) is how long ago this tool first saw the current `version`.
+- **SpoolmanDB freshness (check 2): NOT implemented.** The file contents carry no version or timestamp, but the HTTP `Last-Modified`/`ETag` headers of the GitHub Pages host do exist. Whether those are trustworthy enough to alert on (they reflect the last Pages deploy, not the last data change) is a decision pending with the maintainer, so no freshness check exists. Meanwhile the catalog is rebuilt from a fresh fetch on every run, so lag is bounded by the cron interval. What is recorded is a content hash of the raw SpoolmanDB data and when this tool first saw that hash (`spoolmandb_changed_at`), for context only. No check fires on it.
+- **Resetting exit 6.** The per-source baseline only moves on a successful publish, so after a legitimate large drop exit 6 repeats on every run until you accept the new size: delete `OUT_DIR/state.json` (the next run has no baseline and publishes, then records fresh counts). A corrupt or old-schema `state.json` is handled the same way: the unusable parts are ignored with a WARNING, never a crash.
 
 ### State file
 
@@ -96,11 +97,11 @@ Illustrative values:
   "ofd_version_changed_at": "2026-10-13T04:01:57+00:00",
   "spoolmandb_hash": "<sha256 of the raw SpoolmanDB filaments+materials>",
   "spoolmandb_changed_at": "2026-10-13T04:01:57+00:00",
-  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 21370}
+  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 22980}
 }
 ```
 
-`*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has.
+`ofd_filaments` counts the OFD rows *converted* (22,980 on the live dataset), not the entries added after deduping against SpoolmanDB; it depends on `--include-discontinued`, so switching that flag changes the baseline and can trip exit 6 (or mask a real drop) once; delete `state.json` when changing it. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has.
 
 ### Deploying alongside Spoolman (docker compose)
 
