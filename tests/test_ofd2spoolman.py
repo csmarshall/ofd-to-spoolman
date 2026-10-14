@@ -247,15 +247,15 @@ class TestGuards:
 
     @pytest.mark.parametrize(
         "content",
-        [b"", b"{not json", b'{"a": 1}', b'"text"', b"null", b"[]"],
-        ids=["empty", "garbage", "json-object", "json-string", "json-null", "empty-list"],
+        [b"", b"{not json", b'{"a": 1}', b'"text"', b"null", b"[]", b"\xff\xfe[", b"[" * 100000],
+        ids=["empty", "garbage", "json-object", "json-string", "json-null", "empty-list", "non-utf8", "deeply-nested"],
     )
     def test_corrupt_published_file_exits_7_and_leaves_files_untouched(
         self, run: RunFn, tmp_path: Path, content: bytes, caplog: pytest.LogCaptureFixture
     ) -> None:
         (tmp_path / "filaments.json").write_bytes(content)
         (tmp_path / "materials.json").write_text("[]")
-        assert run(tmp_path) == 7
+        assert run(tmp_path) == ofd2spoolman.EXIT_CORRUPT_BASELINE == 7
         assert (tmp_path / "filaments.json").read_bytes() == content
         assert (tmp_path / "materials.json").read_text() == "[]"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]

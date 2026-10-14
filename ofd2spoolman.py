@@ -46,6 +46,7 @@ from typing import Any
 OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
 DEFAULT_OUT = Path("/opt/sw/spoolman/catalog")
+EXIT_CORRUPT_BASELINE = 7
 USER_AGENT = "ofd2spoolman (self-hosted Spoolman catalog builder)"
 
 # Enum values accepted by Spoolman's ExternalFilament model.
@@ -235,14 +236,14 @@ def previous_count(out_dir: Path) -> int | None:
     """
     path = out_dir / "filaments.json"
     try:
-        text = path.read_text()
+        raw = path.read_bytes()
     except FileNotFoundError:
         return None
     except OSError as exc:
         raise CorruptBaseline(f"cannot read {path}: {exc}") from exc
     try:
-        published = json.loads(text)
-    except ValueError as exc:
+        published = json.loads(raw.decode())  # UnicodeDecodeError is a ValueError
+    except (ValueError, RecursionError) as exc:
         raise CorruptBaseline(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(published, list):
         raise CorruptBaseline(f"{path} is not a JSON list")
@@ -311,7 +312,7 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
             "published catalog is unusable as a baseline, refusing to publish: %s; if it is really bad, delete it to allow a fresh publish",
             exc,
         )
-        return 7
+        return EXIT_CORRUPT_BASELINE
     if prev is not None and len(filaments) < prev // 2:
         log.error("merged catalog has %d entries vs %d published; refusing to shrink by >50%%", len(filaments), prev)
         return 4
