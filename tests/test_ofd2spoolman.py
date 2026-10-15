@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from collections.abc import Callable
@@ -330,6 +331,7 @@ class TestPublish:
 class TestFetch:
     def test_gunzips_gz_urls_and_sends_user_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The production fetch path (tests otherwise inject a fetcher): .gz payloads are decompressed."""
+        import email
         import gzip
         import io
         import urllib.request
@@ -339,11 +341,17 @@ class TestFetch:
         def fake_urlopen(req: urllib.request.Request, timeout: float) -> io.BytesIO:
             seen["ua"] = req.get_header("User-agent")
             seen["timeout"] = timeout
-            return io.BytesIO(gzip.compress(b'{"ok": true}') if req.full_url.endswith(".gz") else b"plain")
+            resp = io.BytesIO(gzip.compress(b'{"ok": true}') if req.full_url.endswith(".gz") else b"plain")
+            resp.headers = email.message_from_string("Last-Modified: Tue, 13 Oct 2026 03:00:00 GMT\n\n")  # type: ignore[attr-defined]
+            return resp
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-        assert ofd2spoolman.fetch("https://example.invalid/all.json.gz") == b'{"ok": true}'
-        assert ofd2spoolman.fetch("https://example.invalid/filaments.json") == b"plain"
+        assert ofd2spoolman.fetch("https://example.invalid/all.json.gz") == ofd2spoolman.Fetched(
+            b'{"ok": true}', "Tue, 13 Oct 2026 03:00:00 GMT"
+        )
+        assert ofd2spoolman.fetch("https://example.invalid/filaments.json") == ofd2spoolman.Fetched(
+            b"plain", "Tue, 13 Oct 2026 03:00:00 GMT"
+        )
         assert seen["ua"] == ofd2spoolman.USER_AGENT
         assert seen["timeout"] > 0
 
@@ -864,3 +872,121 @@ class TestStateEdges:
         with pytest.raises(OSError):
             ofd2spoolman.write_state(tmp_path, {"a": 1})
         assert list(tmp_path.iterdir()) == []
+
+
+LM_OFD, LM_SDB_F, LM_SDB_M = (f"Tue, 13 Oct 2026 0{n}:00:00 GMT" for n in (3, 4, 5))
+LAST_MODIFIED = {ofd2spoolman.OFD_URL: LM_OFD, SDB_F: LM_SDB_F, SDB_M: LM_SDB_M}
+
+
+def freshness_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "FRESHNESS" in r.getMessage()]
+
+
+def mismatches(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in freshness_lines(caplog) if r.levelno == logging.WARNING]
+
+
+class TestInputFreshness:
+    """Last-Modified and content hash must move together; one without the other is warned about, never blocking."""
+
+    def _first(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path, last_modified=LAST_MODIFIED) == 0
+
+    def test_first_run_is_info_only_and_records_both_fields(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.INFO)
+        self._first(run, tmp_path)
+        assert freshness_lines(caplog)
+        assert not mismatches(caplog)
+        inputs = json.loads((tmp_path / "state.json").read_text())["inputs"]
+        assert set(inputs) == {"ofd", "spoolmandb_filaments", "spoolmandb_materials"}
+        assert inputs["ofd"]["last_modified"] == LM_OFD
+        assert inputs["spoolmandb_filaments"]["last_modified"] == LM_SDB_F
+        assert all(len(v["sha256"]) == 64 for v in inputs.values())
+
+    def test_both_changed_is_a_normal_update(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        extra = [*json.loads(sources[SDB_F]), {**json.loads(sources[SDB_F])[0], "id": "sdb_new", "name": "Brand New"}]
+        newer = {k: LM_SDB_F.replace("04:00", "09:00") if k == SDB_F else v for k, v in LAST_MODIFIED.items()}
+        assert run(tmp_path, payloads=with_sdb(sources, filaments=extra), last_modified=newer) == 0
+        assert not mismatches(caplog)
+        assert any("source=spoolmandb_filaments" in m and "updated" in m for m in (r.getMessage() for r in freshness_lines(caplog)))
+
+    def test_neither_changed_is_unchanged(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, last_modified=LAST_MODIFIED) == 0
+        assert not mismatches(caplog)
+        unchanged = [r.getMessage() for r in freshness_lines(caplog) if "unchanged" in r.getMessage()]
+        assert len(unchanged) == 3
+        assert all(r.levelno == logging.INFO for r in freshness_lines(caplog))
+
+    def test_last_modified_moved_with_identical_content_warns(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
+        assert run(tmp_path, last_modified=moved) == 0  # exit code unchanged, still publishes
+        (line,) = mismatches(caplog)
+        assert line.startswith("FRESHNESS-MISMATCH source=ofd ")
+        assert "last_modified moved" in line
+        assert "sha256" in line
+        recorded = json.loads((tmp_path / "state.json").read_text())
+        assert recorded["freshness_mismatches"][0]["source"] == "ofd"
+        assert recorded["freshness_mismatches"][0]["moved"] == "last_modified"
+
+    def test_content_changed_with_same_last_modified_warns(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        mats = [*json.loads(sources[SDB_M]), {"material": "ZZZ", "density": 1.0}]
+        assert run(tmp_path, payloads=with_sdb(sources, materials=mats), last_modified=LAST_MODIFIED) == 0
+        (line,) = mismatches(caplog)
+        assert line.startswith("FRESHNESS-MISMATCH source=spoolmandb_materials ")
+        assert "sha256 moved" in line
+
+    def test_mismatch_does_not_repeat_once_recorded(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        self._first(run, tmp_path)
+        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
+        assert run(tmp_path, last_modified=moved) == 0
+        caplog.set_level(logging.INFO)
+        caplog.clear()  # forget the first run's (expected) warning
+        assert run(tmp_path, last_modified=moved) == 0
+        assert not mismatches(caplog)
+        assert json.loads((tmp_path / "state.json").read_text())["freshness_mismatches"] == []
+
+    def test_missing_header_is_info_not_a_warning(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path) == 0  # no Last-Modified at all (as with --from-ofd-file)
+        assert not mismatches(caplog)
+        assert any("no Last-Modified" in r.getMessage() for r in freshness_lines(caplog))
+
+    def test_old_state_without_inputs_is_info_not_a_warning(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        write_state(tmp_path, run_at="2026-10-12T04:00:00+00:00", ofd_version="v0")
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, last_modified=LAST_MODIFIED) == 0
+        assert not mismatches(caplog)
+
+    def test_local_fetcher_has_no_last_modified(self, sources: dict[str, bytes], tmp_path: Path) -> None:
+        ofd_file = tmp_path / "all.json"
+        ofd_file.write_bytes(sources[ofd2spoolman.OFD_URL])
+        fetched = ofd2spoolman.local_fetcher(ofd_file, tmp_path)(ofd2spoolman.OFD_URL)
+        assert fetched.last_modified is None
+        assert fetched.data == sources[ofd2spoolman.OFD_URL]
+
+    def test_detector_can_fail_and_stays_silent_on_two_sided_change(self) -> None:
+        """Known-bad and known-good straight into the pure function."""
+        old = b"old"
+        prev = {"inputs": {"x": {"last_modified": "A", "sha256": ofd2spoolman.hashlib.sha256(old).hexdigest()}}}
+        check = ofd2spoolman.check_input_freshness
+
+        (same,) = check(prev, {"x": ofd2spoolman.Fetched(old, "A")})
+        (both,) = check(prev, {"x": ofd2spoolman.Fetched(b"new", "B")})
+        (lm_only,) = check(prev, {"x": ofd2spoolman.Fetched(old, "B")})
+        (content_only,) = check(prev, {"x": ofd2spoolman.Fetched(b"new", "A")})
+        assert (same.status, both.status) == ("unchanged", "updated")
+        assert (lm_only.status, lm_only.moved) == ("mismatch", "last_modified")
+        assert (content_only.status, content_only.moved) == ("mismatch", "sha256")

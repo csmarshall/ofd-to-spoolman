@@ -44,7 +44,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
@@ -81,21 +81,29 @@ STATE_FILE = "state.json"
 log = logging.getLogger("ofd2spoolman")
 
 
-def fetch(url: str) -> bytes:
-    """Download a URL, transparently gunzipping `.gz` payloads."""
+class Fetched(NamedTuple):
+    """One downloaded input: the (gunzipped) payload and the HTTP Last-Modified header, if the server sent one."""
+
+    data: bytes
+    last_modified: str | None
+
+
+def fetch(url: str) -> Fetched:
+    """Download a URL, transparently gunzipping `.gz` payloads, and keep its Last-Modified header."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=120) as resp:
         data = resp.read()
-    log.debug("fetched %s (%d bytes)", url, len(data))
-    return gzip.decompress(data) if url.endswith(".gz") else data
+        last_modified = resp.headers.get("Last-Modified")
+    log.debug("fetched %s (%d bytes, Last-Modified %s)", url, len(data), last_modified)
+    return Fetched(gzip.decompress(data) if url.endswith(".gz") else data, last_modified)
 
 
-def local_fetcher(ofd_file: Path, sdb_dir: Path) -> Callable[[str], bytes]:
-    """Build a fetcher that serves the OFD export and SpoolmanDB files from disk (for tests and CI)."""
+def local_fetcher(ofd_file: Path, sdb_dir: Path) -> Callable[[str], Fetched]:
+    """Build a fetcher that serves the OFD export and SpoolmanDB files from disk (for tests and CI); there is no Last-Modified."""
 
-    def fetch_local(url: str) -> bytes:
+    def fetch_local(url: str) -> Fetched:
         path = ofd_file if url == OFD_URL else sdb_dir / url.rsplit("/", 1)[1]
-        return path.read_bytes()
+        return Fetched(path.read_bytes(), None)
 
     return fetch_local
 
@@ -446,12 +454,91 @@ def load_state(out_dir: Path) -> dict[str, Any]:
             state[key] = raw[key]
         elif key in raw:
             log.warning("%s: %r is not a string; ignoring it", STATE_FILE, key)
+    inputs = load_recorded_inputs(raw.get("inputs"))
+    if inputs:
+        state["inputs"] = inputs
+    elif "inputs" in raw:
+        log.warning("%s: 'inputs' has no usable entries; freshness will be treated as a first run", STATE_FILE)
     counts = raw.get("counts")
     if isinstance(counts, dict) and all(type(v) is int and v > 0 for v in counts.values()):
         state["counts"] = counts
     elif "counts" in raw:
         log.warning("%s: 'counts' is not a mapping of positive integers; ignoring all recorded counts", STATE_FILE)
     return state
+
+
+def load_recorded_inputs(raw: Any) -> dict[str, dict[str, str | None]]:
+    """The per-input {last_modified, sha256} records that are well-formed; anything else is dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    inputs: dict[str, dict[str, str | None]] = {}
+    for name, entry in raw.items():
+        if isinstance(entry, dict) and isinstance(entry.get("sha256"), str) and isinstance(entry.get("last_modified"), str | None):
+            inputs[name] = {"last_modified": entry["last_modified"], "sha256": entry["sha256"]}
+    return inputs
+
+
+class FreshnessResult(NamedTuple):
+    """Outcome of comparing one input with the previous successful run.
+
+    status: first (nothing to compare), updated (both moved), unchanged (neither moved),
+    unverifiable (no Last-Modified on one side, so only the content hash is known), mismatch (exactly one moved).
+    """
+
+    source: str
+    status: str
+    moved: str | None  # for a mismatch: "last_modified" or "sha256", whichever moved alone
+    message: str
+    previous: dict[str, str | None]
+    current: dict[str, str | None]
+
+    @property
+    def mismatch(self) -> bool:
+        return self.status == "mismatch"
+
+
+def input_record(fetched: Fetched) -> dict[str, str | None]:
+    """The persisted shape of one input; maps onto the planned manifest (#24) as `last_modified` and `sha256`."""
+    return {"last_modified": fetched.last_modified, "sha256": hashlib.sha256(fetched.data).hexdigest()}
+
+
+def check_input_freshness(prev_state: dict[str, Any], fetched: dict[str, Fetched]) -> list[FreshnessResult]:
+    """Compare each input's Last-Modified header and content hash with the last successful run.
+
+    A header that moves while the bytes are identical (or bytes that change under the same header) means the
+    upstream is not behaving the way this tool assumes; it is reported, never blocking.
+    """
+    results = []
+    recorded = prev_state.get("inputs") or {}
+    for name, item in fetched.items():
+        cur = input_record(item)
+        prev = recorded.get(name)
+        if prev is None:
+            status, moved, detail = "first", None, "no previous run to compare with"
+        else:
+            hash_moved = prev["sha256"] != cur["sha256"]
+            if prev["last_modified"] is None or cur["last_modified"] is None:
+                status, moved = "unverifiable", None
+                detail = f"no Last-Modified to compare (content {'changed' if hash_moved else 'identical'})"
+            else:
+                lm_moved = prev["last_modified"] != cur["last_modified"]
+                if lm_moved and hash_moved:
+                    status, moved, detail = "updated", None, "Last-Modified and content both moved"
+                elif not lm_moved and not hash_moved:
+                    status, moved, detail = "unchanged", None, "Last-Modified and content both identical"
+                else:
+                    status, moved = "mismatch", "last_modified" if lm_moved else "sha256"
+                    other = "content hash" if lm_moved else "Last-Modified"
+                    detail = f"{moved} moved but {other} did not"
+        before = prev or {"last_modified": None, "sha256": None}
+        fields = (
+            f"last_modified={before['last_modified']}->{cur['last_modified']} "
+            f"sha256={(before['sha256'] or '')[:12]}->{str(cur['sha256'])[:12]}"
+        )
+        tag = "FRESHNESS-MISMATCH" if status == "mismatch" else "FRESHNESS"
+        message = f"{tag} source={name} " + (f"moved={moved} " if moved else f"status={status} ") + f"({detail}) {fields}"
+        results.append(FreshnessResult(name, status, moved, message, prev or {}, cur))
+    return results
 
 
 def spoolmandb_hash(sdb_filaments: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> str:
@@ -488,6 +575,7 @@ def build_state(
     sdb_filaments: list[dict[str, Any]],
     sdb_materials: list[dict[str, Any]],
     ofd_count: int,
+    freshness: list[FreshnessResult],
 ) -> dict[str, Any]:
     """The state to record after a successful publish; *_changed_at only moves when the value does."""
     stamp = now.isoformat(timespec="seconds")
@@ -502,6 +590,10 @@ def build_state(
         "ofd_version_changed_at": prev_state["ofd_version_changed_at"] if version_same else stamp,
         "spoolmandb_hash": content_hash,
         "spoolmandb_changed_at": prev_state["spoolmandb_changed_at"] if hash_same else stamp,
+        "inputs": {r.source: r.current for r in freshness},
+        "freshness_mismatches": [
+            {"source": r.source, "moved": r.moved, "previous": r.previous, "current": r.current} for r in freshness if r.mismatch
+        ],
         "counts": {
             "spoolmandb_filaments": len(sdb_filaments),
             "spoolmandb_materials": len(sdb_materials),
@@ -549,7 +641,7 @@ def write_state(out_dir: Path, state: dict[str, Any]) -> None:
 
 def main(
     argv: Sequence[str] | None = None,
-    fetcher: Callable[[str], bytes] | None = None,
+    fetcher: Callable[[str], Fetched] | None = None,
     now: datetime | None = None,
 ) -> int:
     """Fetch both sources, merge, sanity-check, and publish.
@@ -583,9 +675,14 @@ def main(
     )
 
     try:
-        sdb_filaments = json.loads(fetch_source(SPOOLMANDB_URL + "filaments.json"))
-        sdb_materials = json.loads(fetch_source(SPOOLMANDB_URL + "materials.json"))
-        ofd = json.loads(fetch_source(OFD_URL))
+        fetched = {
+            "spoolmandb_filaments": fetch_source(SPOOLMANDB_URL + "filaments.json"),
+            "spoolmandb_materials": fetch_source(SPOOLMANDB_URL + "materials.json"),
+            "ofd": fetch_source(OFD_URL),
+        }
+        sdb_filaments = json.loads(fetched["spoolmandb_filaments"].data)
+        sdb_materials = json.loads(fetched["spoolmandb_materials"].data)
+        ofd = json.loads(fetched["ofd"].data)
     except Exception as exc:  # network / parse failure: keep the last good catalog
         log.error("fetch failed, leaving existing catalog untouched: %s", exc)
         return EXIT_FETCH_FAILED
@@ -645,13 +742,17 @@ def main(
     warnings = check_ofd_stalled(ofd, prev_state, now)
     for warning in warnings:
         log.warning("%s", warning)
+    # Reported only: a freshness mismatch must neither block publishing nor change the exit code (alert routing is #24).
+    freshness = check_input_freshness(prev_state, fetched)
+    for result in freshness:
+        log.log(logging.WARNING if result.mismatch else logging.INFO, "%s", result.message)
     exit_code = EXIT_PUBLISHED_WITH_WARNINGS if warnings else 0
 
     if args.dry_run:
         log.info("dry run: nothing written")
         return exit_code
     publish(args.out, {"filaments.json": filaments, "materials.json": materials})
-    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments)))
+    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments), freshness))
     return exit_code
 
 

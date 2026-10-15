@@ -35,20 +35,27 @@ def sources() -> dict[str, bytes]:
     }
 
 
-def fetcher_for(payloads: dict[str, bytes]) -> Callable[[str], bytes]:
-    """A fetch replacement that serves `payloads` and fails loudly on any other URL."""
+def fetcher_for(payloads: dict[str, bytes], last_modified: dict[str, str] | None = None) -> Callable[[str], ofd2spoolman.Fetched]:
+    """A fetch replacement that serves `payloads` (with optional per-URL Last-Modified) and fails loudly on any other URL."""
 
-    def fetch(url: str) -> bytes:
-        return payloads[url]
+    def fetch(url: str) -> ofd2spoolman.Fetched:
+        return ofd2spoolman.Fetched(payloads[url], (last_modified or {}).get(url))
 
     return fetch
 
 
 @pytest.fixture
 def run(sources: dict[str, bytes]) -> Callable[..., int]:
-    """run(out_dir, *flags, payloads=None, now=FIXTURE_NOW) -> exit code of main() against the fixtures."""
+    """run(out_dir, *flags, payloads=None, now=FIXTURE_NOW, last_modified=None) -> exit code of main() against the fixtures."""
 
-    def _run(out_dir: Path, *flags: str, payloads: dict[str, bytes] | None = None, now: datetime = FIXTURE_NOW) -> int:
-        return ofd2spoolman.main(["--out", str(out_dir), *flags], fetcher=fetcher_for(sources if payloads is None else payloads), now=now)
+    def _run(
+        out_dir: Path,
+        *flags: str,
+        payloads: dict[str, bytes] | None = None,
+        now: datetime = FIXTURE_NOW,
+        last_modified: dict[str, str] | None = None,
+    ) -> int:
+        fetcher = fetcher_for(sources if payloads is None else payloads, last_modified)
+        return ofd2spoolman.main(["--out", str(out_dir), *flags], fetcher=fetcher, now=now)
 
     return _run
