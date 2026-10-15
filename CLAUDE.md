@@ -17,19 +17,15 @@ Bridge from the Open Filament Database (OFD) into Spoolman's external filament c
 2. Branch in a worktree outside this tree: `~/work/claude/ofd-to-spoolman-worktrees/<n>-<slug>`.
 3. PR with `Closes #n`; commit subjects `fix(#n): …` / `feat(#n): …`.
 4. A green CI run is the gate, not a local "tests pass".
-5. A `reviewer` subagent reviews the diff, then Charles reviews.
+5. A `reviewer` subagent reviews the diff, then the maintainer reviews.
 6. Squash-merge, then deploy deliberately with `./install.sh` (`--check` first for drift).
 
-## Deploy target (rosa)
+## Deploy target
 
-- Script: `/opt/sw/docker-compose/spoolman/ofd2spoolman.py` (copied by install.sh with a pointer header; never edit it in place).
-- Output: `/opt/sw/spoolman/catalog/`, served by the `catalog` nginx sidecar in `/opt/sw/docker-compose/spoolman/docker-compose.yml`.
-- Cron (charles): daily 23:15; last-run log at `/opt/sw/spoolman/catalog-build.log`.
-- Check what's live: `curl -s http://127.0.0.1:7912/spoolman/api/v1/info` (`external_db_name`), and the count from `/spoolman/api/v1/external/filament`.
+Per-host deploy details (paths, cron, how to check what's live) are NOT committed. A gitignored `CLAUDE.local.md` may exist in the repo directory with them; read it if present. `install.sh` takes its target from `--target` or a gitignored `install.local` (`TARGET=...`). `--out` of `ofd2spoolman.py` is required. Never write host names, IPs or deploy paths into tracked files.
 
 ## Gotchas
 
 - OFD's bulk export is at `https://api.openfilamentdatabase.org/json/all.json.gz`, NOT under `/api/v1/`.
 - The `norm()` used for name comparison must keep `+`: `PETG+` is not `PETG`. A regression test covers this.
-- rosa's `~/.curlrc` follows redirects; use `curl -q` when a status code or redirect is what you're checking.
 - Spoolman serves `/external/filament` straight from its cache file; a request during the hourly sync rewrite can 500 once ("Response content longer than Content-Length"). That's upstream behaviour, not ours.
