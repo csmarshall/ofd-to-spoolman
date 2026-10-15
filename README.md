@@ -49,6 +49,8 @@ A fetch or parse failure also exits non-zero without touching the published file
 
 Discontinued products are skipped unless you pass `--include-discontinued`. Refill sizes get `(refill)` added to the name.
 
+Spoolman rejects filament names over 64 characters (`FilamentParameters.name` `max_length=64`, ORM `String(64)`), so over-long OFD-derived names are shortened deterministically: a trailing parenthetical such as `(Black & Red & Gold)` is dropped if the remainder fits and does not collide with another record of the same manufacturer, material, weight and diameter; otherwise the middle is elided to `start… end` on word boundaries, keeping the trailing colour. If two shortened names would still collide, the cut is shifted, and as a last resort a short digest of the original is appended. Every case is logged at INFO. SpoolmanDB names are never altered; one over 64 characters is logged as a warning.
+
 SpoolmanDB entries are passed through unchanged apart from brand spelling. When the same product (manufacturer, material, name, weight, diameter) is in both, the SpoolmanDB entry is kept, because SpoolmanDB has the stricter data policy: measured spool weights and no generated values.
 
 ## Usage
