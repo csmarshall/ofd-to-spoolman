@@ -1,5 +1,13 @@
 # Example: Spoolman plus an nginx sidecar that serves the catalog built by
 # ofd2spoolman.py. Replace every value marked CHANGE.
+#
+# First run, in this order:
+#   1. mkdir -p /path/to/spoolman-data /path/to/catalog
+#   2. chown both to the user that runs the cron job / matches PUID:PGID below
+#      (Spoolman writes its data dir; ofd2spoolman.py writes the catalog dir).
+#   3. python3 -I ofd2spoolman.py --out /path/to/catalog   (so the catalog
+#      exists before Spoolman's first fetch of EXTERNAL_DB_URL)
+#   4. docker compose up -d
 services:
   spoolman:
     image: ghcr.io/donkie/spoolman:latest
@@ -9,9 +17,10 @@ services:
       - PGID=1000
       - TZ=UTC                                   # CHANGE: your timezone
       - SPOOLMAN_PORT=8000
-      # Only needed when Spoolman sits behind a reverse proxy under a sub-path.
-      # Remove both lines if you serve it at the root of its own hostname.
-      - SPOOLMAN_BASE_PATH=/spoolman
+      # By default the UI is at http://<host>:8000/. To serve it under a
+      # sub-path behind a reverse proxy, uncomment this; the UI and API then
+      # live under /spoolman/ (http://<host>:8000/spoolman/).
+      # - SPOOLMAN_BASE_PATH=/spoolman
       # CHANGE: every hostname/IP clients use to reach Spoolman, comma-separated.
       - SPOOLMAN_ALLOWED_HOSTS=spoolman.example.com,192.0.2.10,localhost
       # Filament catalog = SpoolmanDB + Open Filament Database, merged daily by
