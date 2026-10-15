@@ -390,7 +390,7 @@ def shrink_problem(counts: dict[str, int], previous: PreviousState | None) -> st
     return None
 
 
-def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], ofd2spoolman.Fetched] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, help="directory for state.json, issue-body.md and new-conflicts.md")
     ap.add_argument("--previous", type=Path, help="state.json from the previous run (absent: baseline run)")
@@ -410,8 +410,8 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     try:
-        sdb_filaments = json.loads(fetch_source(SPOOLMANDB_URL + "filaments.json"))
-        ofd = json.loads(fetch_source(OFD_URL))
+        sdb_filaments = json.loads(fetch_source(SPOOLMANDB_URL + "filaments.json").data)
+        ofd = json.loads(fetch_source(OFD_URL).data)
     except Exception as exc:
         log.error("fetch failed: %s", exc)
         return 2
