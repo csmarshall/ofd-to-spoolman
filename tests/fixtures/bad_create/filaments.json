@@ -1,0 +1,68 @@
+[
+  {
+    "manufacturer": "Acme",
+    "material": "PLA",
+    "density": 1.24,
+    "weight": 1000.0,
+    "spool_weight": null,
+    "spool_type": null,
+    "diameter": 1.75,
+    "color_hex": "ff0000",
+    "color_hexes": null,
+    "extruder_temp": 210,
+    "bed_temp": 60,
+    "finish": null,
+    "multi_color_direction": null,
+    "pattern": null,
+    "translucent": false,
+    "glow": false,
+    "id": "bad_name_65",
+    "name": "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"
+  },
+  {
+    "manufacturer": "Acme",
+    "material": "PLA",
+    "density": 1.24,
+    "weight": 1000.0,
+    "spool_weight": null,
+    "spool_type": null,
+    "diameter": 1.75,
+    "color_hex": null,
+    "color_hexes": [
+      "ff0000",
+      "00ff00"
+    ],
+    "extruder_temp": 210,
+    "bed_temp": 60,
+    "finish": null,
+    "multi_color_direction": null,
+    "pattern": null,
+    "translucent": false,
+    "glow": false,
+    "id": "bad_multi_no_direction",
+    "name": "Rainbow"
+  },
+  {
+    "manufacturer": "Acme",
+    "material": "PLA",
+    "density": 1.24,
+    "weight": 1000.0,
+    "spool_weight": null,
+    "spool_type": null,
+    "diameter": 1.75,
+    "color_hex": "ff0000",
+    "color_hexes": [
+      "ff0000",
+      "00ff00"
+    ],
+    "extruder_temp": 210,
+    "bed_temp": 60,
+    "finish": null,
+    "multi_color_direction": "coaxial",
+    "pattern": null,
+    "translucent": false,
+    "glow": false,
+    "id": "bad_both_colour_fields",
+    "name": "Both"
+  }
+]

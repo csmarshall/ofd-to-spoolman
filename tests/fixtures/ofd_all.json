@@ -142,6 +142,22 @@
       "material_id": "00000000-0000-5000-8000-000000000307",
       "slug": "zeta_mystery",
       "material": "PLA"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000211",
+      "id": "00000000-0000-5000-8000-000000000120",
+      "name": "Acme PLA Silk High-Speed Quadruple Twilight",
+      "diameter_tolerance": 0.05,
+      "density": 1.24,
+      "min_print_temperature": 200,
+      "max_print_temperature": 220,
+      "min_bed_temperature": 0,
+      "max_bed_temperature": 0,
+      "discontinued": false,
+      "brand_id": "00000000-0000-5000-8000-000000000002",
+      "material_id": "00000000-0000-5000-8000-000000000303",
+      "slug": "acme_pla_silk_quad",
+      "material": "PLA"
     }
   ],
   "variants": [
@@ -256,6 +272,26 @@
       "discontinued": false,
       "filament_id": "00000000-0000-5000-8000-000000000017",
       "slug": "pink"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000441",
+      "id": "00000000-0000-5000-8000-000000000141",
+      "name": "Glow (Black & Red & Dark Purple & Gold)",
+      "color_hex": "#000000",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000120",
+      "slug": "glow_(black_&_red_&_",
+      "traits": {}
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000442",
+      "id": "00000000-0000-5000-8000-000000000142",
+      "name": "Gorgeous Harmony Black Red Dark Purple Gold Red Blue",
+      "color_hex": "#ff0000",
+      "discontinued": false,
+      "filament_id": "00000000-0000-5000-8000-000000000120",
+      "slug": "gorgeous_harmony_bla",
+      "traits": {}
     }
   ],
   "sizes": [
@@ -411,6 +447,28 @@
       "discontinued": false,
       "id": "00000000-0000-5000-8000-000000000065",
       "variant_id": "00000000-0000-5000-8000-000000000999"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000541",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "empty_spool_weight": 200,
+      "article_number": null,
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000161",
+      "variant_id": "00000000-0000-5000-8000-000000000141"
+    },
+    {
+      "uuid": "00000000-0000-5000-8000-000000000542",
+      "filament_weight": 1000,
+      "diameter": 1.75,
+      "spool_refill": false,
+      "empty_spool_weight": 200,
+      "article_number": null,
+      "discontinued": false,
+      "id": "00000000-0000-5000-8000-000000000162",
+      "variant_id": "00000000-0000-5000-8000-000000000142"
     }
   ],
   "stores": [],

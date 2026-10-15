@@ -170,6 +170,12 @@ def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[st
         if not (variant and fil and brand):
             skip("dangling reference")
             continue
+        # The canonical stored uuid, never the derived size["id"] (a uuid5 over names, GTIN and row position that changes on an edit).
+        # No fallback to it.
+        uuid = size.get("uuid")
+        if not uuid or not isinstance(uuid, str):
+            skip("missing uuid")
+            continue
         if not include_discontinued and (size.get("discontinued") or variant.get("discontinued") or fil.get("discontinued")):
             skip("discontinued")
             continue
@@ -185,7 +191,7 @@ def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[st
         finish = "matte" if "matte" in traits else None
         pattern = "marble" if "imitates_marble" in traits else "sparkle" if "glitter" in traits else None
         entry: dict[str, Any] = {
-            "id": f"ofd_{size['id']}",
+            "id": f"ofd_{uuid}",
             "manufacturer": brand["name"],
             "name": name,
             "material": fil["material"],
@@ -208,6 +214,155 @@ def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[st
 
     log.info("OFD: %d sizes -> %d filaments; skipped %s", len(ofd["sizes"]), len(out), skipped or "none")
     return out
+
+
+# Spoolman's maximum filament name length: FilamentParameters.name max_length=64 in spoolman/api/v1/filament.py
+# and Filament.name String(64) in spoolman/database/models.py (checked against v0.27.0).
+NAME_MAX_LENGTH = 64
+ELLIPSIS = "…"
+# Share of the budget reserved for the end of an elided name, so a trailing colour survives.
+ELIDED_TAIL_BUDGET = NAME_MAX_LENGTH // 3
+# "(refill)" is a marker convert_ofd adds, not a colour list: it is never dropped.
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\((?!refill\))[^()]*\)\s*$")
+_EXAMPLES_LOGGED = 5
+
+
+def _elide(name: str, tail_budget: int) -> str:
+    """Keep whole words from the start and from the end (the end gets up to `tail_budget` characters), joined by one "… "."""
+    words = name.split()
+    tail_words: list[str] = []
+    while words and len(" ".join([words[-1], *tail_words])) <= tail_budget:
+        tail_words.insert(0, words.pop())
+    tail = " ".join(tail_words)
+    if not tail:
+        tail = words.pop()[-tail_budget:]  # one word too long on its own: cut it by characters
+
+    separator = ELLIPSIS + " "
+    head_budget = NAME_MAX_LENGTH - len(separator) - len(tail)
+    head_words: list[str] = []
+    for word in words:
+        if len(" ".join([*head_words, word])) > head_budget:
+            break
+        head_words.append(word)
+    head = " ".join(head_words) or (words[0][:head_budget] if words else "")
+    return f"{head}{separator}{tail}"
+
+
+def shorten_name(name: str) -> str:
+    """
+    Deterministically elide the middle of a name so it fits Spoolman's length limit.
+
+    Keeps whole words from the start and from the end, joined by one "… ", so a trailing colour such as "Neon Yellow"
+    survives. A name already within the limit is returned unchanged, which makes the function idempotent.
+    """
+    if len(name) <= NAME_MAX_LENGTH:
+        return name
+    return _elide(name, ELIDED_TAIL_BUDGET)
+
+
+def _elision_candidates(name: str) -> list[str]:
+    """The plain elision first, then the same name with the cut shifted (smaller tail, then larger), then a digest-tagged last resort."""
+    candidates = [shorten_name(name)]
+    for budget in [*range(ELIDED_TAIL_BUDGET - 1, 0, -1), *range(ELIDED_TAIL_BUDGET + 1, NAME_MAX_LENGTH // 2 + 1)]:
+        candidate = _elide(name, budget)
+        # A shifted cut must keep a head and a tail of whole words; only the plain elision may fall back to character cuts.
+        tail = candidate.rsplit(ELLIPSIS + " ", 1)[1]
+        whole_word_tail = name.endswith(" " + tail)
+        if len(candidate) <= NAME_MAX_LENGTH and not candidate.startswith(ELLIPSIS) and whole_word_tail and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _digest_tagged(name: str, length: int) -> str:
+    """Last resort when no cut is unique: a short digest of the full original name, still within the limit."""
+    tag = hashlib.sha256(name.encode()).hexdigest()[:length]
+    return f"{_elide(name, ELIDED_TAIL_BUDGET)[: NAME_MAX_LENGTH - length - 1]}~{tag}"
+
+
+def shorten_long_names(records: list[dict[str, Any]], fixed: Sequence[dict[str, Any]] = ()) -> list[tuple[str, str, str, str]]:
+    """
+    Bring every record's name within Spoolman's limit, in place, and report what changed.
+
+    Per over-long name: (a) drop a trailing parenthetical if the remainder fits and does not collide with another
+    record's name for the same (manufacturer, material, weight, diameter); otherwise (b) elide the middle
+    (:func:`shorten_name`). (c) If an elided name still collides with another record's final name, shift the cut
+    (:func:`_elision_candidates`) and as a last resort tag it with a digest, so names stay unique. `fixed` records
+    (SpoolmanDB) are never altered but occupy their names. Collisions are judged against every other record, and elided
+    records are resolved in sorted order, so the result does not depend on record order.
+
+    Returns ``(id, original, shortened, step)`` tuples, step being "parenthetical" or "elided".
+    """
+
+    def key(record: dict[str, Any], name: str) -> tuple[Any, ...]:
+        return (record["manufacturer"], record["material"], record["weight"], record["diameter"], name)
+
+    def stripped(name: str) -> str:
+        return _TRAILING_PARENTHETICAL_RE.sub("", name)
+
+    in_use: dict[tuple[Any, ...], int] = {}
+    for record in [*fixed, *records]:
+        name = record["name"]
+        candidate = stripped(name) if len(name) > NAME_MAX_LENGTH else name
+        if len(name) > NAME_MAX_LENGTH and len(candidate) > NAME_MAX_LENGTH:
+            continue
+        in_use[key(record, candidate)] = in_use.get(key(record, candidate), 0) + 1
+
+    changes: list[tuple[str, str, str, str]] = []
+    to_elide: list[dict[str, Any]] = []
+    owners: dict[tuple[Any, ...], str] = {key(r, r["name"]): r["name"] for r in fixed}  # final name -> original that owns it
+    for record in records:
+        original = record["name"]
+        if len(original) <= NAME_MAX_LENGTH:
+            owners[key(record, original)] = original
+            continue
+        candidate = stripped(original)
+        if candidate and candidate != original and len(candidate) <= NAME_MAX_LENGTH and in_use[key(record, candidate)] == 1:
+            record["name"] = candidate
+            owners[key(record, candidate)] = original
+            changes.append((record["id"], original, candidate, "parenthetical"))
+        else:
+            to_elide.append(record)
+
+    for record in sorted(to_elide, key=lambda r: (r["manufacturer"], r["material"], r["weight"], r["diameter"], r["name"], r["id"])):
+        original = record["name"]
+
+        def free(name: str, original: str = original, record: dict[str, Any] = record) -> bool:
+            return owners.get(key(record, name), original) == original
+
+        chosen = next((c for c in _elision_candidates(original) if free(c)), None)
+        digest_length = 4
+        while chosen is None:
+            tagged = _digest_tagged(original, digest_length)
+            chosen = tagged if free(tagged) else None
+            digest_length += 1
+        record["name"] = chosen
+        owners[key(record, chosen)] = original
+        changes.append((record["id"], original, chosen, "elided"))
+    return changes
+
+
+def shorten_ofd_names(records: list[dict[str, Any]], fixed: Sequence[dict[str, Any]]) -> None:
+    """Shorten over-long OFD-derived names (never the SpoolmanDB `fixed` ones) and log the count and examples."""
+    changes = shorten_long_names(records, fixed)
+    if not changes:
+        return
+    steps = {step: sum(1 for c in changes if c[3] == step) for step in ("parenthetical", "elided")}
+    log.info("shortened %d name(s) to fit Spoolman's %d-character limit: %s", len(changes), NAME_MAX_LENGTH, steps)
+    for record_id, original, shortened, step in changes[:_EXAMPLES_LOGGED]:
+        log.info("  %s (%s): %r -> %r", record_id, step, original, shortened)
+    log.debug("all shortened names: %s", changes)
+
+
+def warn_over_long_fixed_names(records: Sequence[dict[str, Any]]) -> None:
+    """SpoolmanDB entries are passed through unchanged, so an over-long one is reported, not altered."""
+    too_long = [r for r in records if len(r["name"]) > NAME_MAX_LENGTH]
+    for record in too_long:
+        log.warning(
+            "SpoolmanDB name exceeds Spoolman's %d-character limit and is passed through unchanged: %s %r",
+            NAME_MAX_LENGTH,
+            record["id"],
+            record["name"],
+        )
 
 
 def dedupe_key(f: dict[str, Any]) -> tuple[str, str, str, float, float]:
@@ -711,6 +866,9 @@ def main(
     sdb_keys = {dedupe_key(f) for f in sdb_filaments}
     unique_ofd = [f for f in ofd_filaments if dedupe_key(f) not in sdb_keys]
     log.info("dedupe: %d OFD entries already in SpoolmanDB, %d added", len(ofd_filaments) - len(unique_ofd), len(unique_ofd))
+
+    warn_over_long_fixed_names(sdb_filaments)
+    shorten_ofd_names(unique_ofd, fixed=sdb_filaments)
 
     filaments = sdb_filaments + unique_ofd
     ids = [f["id"] for f in filaments]

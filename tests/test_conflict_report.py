@@ -404,7 +404,7 @@ class TestMain:
     def test_state_records_counts_and_the_full_report_is_written(self, tmp_path: Path, payloads: dict[str, bytes]) -> None:
         cr.main(["--out", str(tmp_path), "--run-url", "https://example.com/run/7"], fetcher=fetcher_for(payloads))
         counts = json.loads((tmp_path / "state.json").read_text())["counts"]
-        assert counts == {"sdb_filaments": 2, "ofd_filaments": 9, "matched": 1}
+        assert counts == {"sdb_filaments": 2, "ofd_filaments": 11, "matched": 1}
         assert "Full conflict report" in (tmp_path / "conflicts-full.md").read_text()
 
     def test_stale_new_conflicts_file_from_a_reused_out_dir_is_removed(self, tmp_path: Path, payloads: dict[str, bytes]) -> None:

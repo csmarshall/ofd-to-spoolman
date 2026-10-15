@@ -9,7 +9,9 @@ Bridge from the Open Filament Database (OFD) into Spoolman's external filament c
 - **SpoolmanDB entries win on collision** and are passed through unchanged apart from brand-spelling unification.
 - **Never publish a worse catalog than the live one.** Fetch failures, duplicate ids and a >50% shrink all exit non-zero without touching the output. Keep the writes atomic (temp file + rename in the same dir).
 - **Standard library only** for `ofd2spoolman.py`; it runs from cron under `/usr/bin/python3 -I` with no venv. Dev tooling (pytest, ruff, mypy) lives in the `dev` extra.
-- Ids are `ofd_<OFD size uuid>`. Changing the id scheme orphans every Spoolman filament linked to an external id, so treat it as a breaking change.
+- **Names are at most 64 characters** (Spoolman's `FilamentParameters.name` `max_length=64`, ORM `String(64)`). OFD-derived names go through `shorten_long_names`; SpoolmanDB names are never altered, only warned about. The same rule lives in the OFD fork's `spoolman_mapping.py`; keep the semantics identical so both produce the same names.
+- `tests/validate_create_path.py` replays the UI's create mapping against `FilamentParameters` inside the real Spoolman image, because `ExternalFilamentsFile` accepts records the create endpoint rejects. `tests/schema_check.sh` must also see its known-bad fixture rejected; never weaken either.
+- Ids are `ofd_<size["uuid"]>`: OFD's stored canonical `uuid`, NOT `size["id"]` (a uuid5 derived from names, GTIN and row position, which changes on an edit). Sizes without a `uuid` are skipped and counted, never falling back to `id`. Spoolman has no alias concept, so links to a uuid that OFD retires via `moved_from` won't follow. Changing the id scheme orphans every Spoolman filament linked to an external id, so treat it as a breaking change.
 
 ## Workflow
 

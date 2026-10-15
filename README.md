@@ -34,7 +34,7 @@ A fetch or parse failure also exits non-zero without touching the published file
 
 | Spoolman | From OFD | Notes |
 |---|---|---|
-| `id` | `ofd_<size.id>` | OFD's ids are stable UUIDs, so Spoolman's `external_id` links survive rebuilds |
+| `id` | `ofd_<size.uuid>` | OFD's stored canonical `uuid`, which does not change when a name, GTIN or row order is edited. The derived `size.id` is deliberately not used. Sizes without a `uuid` are skipped and counted. Spoolman has no alias concept, so a link to a `uuid` that OFD retires through `moved_from` does not follow it to the replacement |
 | `manufacturer` | `brand.name` | spelling unified with SpoolmanDB where they differ only in case or punctuation |
 | `name` | `filament.name` + `variant.name` | leading brand name removed; a bare material name ("PLA") removed; product lines such as `PETG+` kept |
 | `material` | `filament.material` | |
@@ -48,6 +48,10 @@ A fetch or parse failure also exits non-zero without touching the published file
 | `translucent` / `glow` | traits `translucent`/`transparent`, `glow` | |
 
 Discontinued products are skipped unless you pass `--include-discontinued`. Refill sizes get `(refill)` added to the name.
+
+Spoolman rejects filament names over 64 characters (`FilamentParameters.name` `max_length=64`, ORM `String(64)`), so over-long OFD-derived names are shortened deterministically: a trailing parenthetical such as `(Black & Red & Gold)` is dropped if the remainder fits and does not collide with another record of the same manufacturer, material, weight and diameter; otherwise the middle is elided to `start… end` on word boundaries, keeping the trailing colour. If two shortened names would still collide, the cut is shifted, and as a last resort a short digest of the original is appended. Every case is logged at INFO. SpoolmanDB names are never altered; one over 64 characters is logged as a warning. A trailing `(refill)` marker is never dropped as a parenthetical.
+
+Shortened names are recomputed every run with no persisted state, so when a collision partner appears or disappears a shortened name can change between runs. Spoolman copies the name at create time and links hang on the id, so only the dropdown labels change. A duplicated `uuid` in OFD data blocks the publish with `EXIT_DUPLICATE_IDS` (fail-safe; none exist today).
 
 SpoolmanDB entries are passed through unchanged apart from brand spelling. When the same product (manufacturer, material, name, weight, diameter) is in both, the SpoolmanDB entry is kept, because SpoolmanDB has the stricter data policy: measured spool weights and no generated values.
 
