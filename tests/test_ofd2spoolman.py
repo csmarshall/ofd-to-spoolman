@@ -923,7 +923,9 @@ class TestInputFreshness:
         assert len(unchanged) == 3
         assert all(r.levelno == logging.INFO for r in freshness_lines(caplog))
 
-    def test_last_modified_moved_with_identical_content_warns(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    def test_last_modified_moved_with_identical_content_warns_for_ofd(
+        self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         self._first(run, tmp_path)
         caplog.set_level(logging.INFO)
         moved = {**LAST_MODIFIED, ofd2spoolman.OFD_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
@@ -987,6 +989,82 @@ class TestInputFreshness:
         (both,) = check(prev, {"x": ofd2spoolman.Fetched(b"new", "B")})
         (lm_only,) = check(prev, {"x": ofd2spoolman.Fetched(old, "B")})
         (content_only,) = check(prev, {"x": ofd2spoolman.Fetched(b"new", "A")})
+        assert lm_only.mismatch and content_only.mismatch
         assert (same.status, both.status) == ("unchanged", "updated")
         assert (lm_only.status, lm_only.moved) == ("mismatch", "last_modified")
         assert (content_only.status, content_only.moved) == ("mismatch", "sha256")
+
+    def test_pages_redeploy_is_info_for_spoolmandb(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """GitHub Pages restamps every file on each deploy, so a Last-Modified-only move on SpoolmanDB is expected."""
+        self._first(run, tmp_path)
+        caplog.set_level(logging.INFO)
+        caplog.clear()
+        moved = {**LAST_MODIFIED, SDB_M: "Wed, 14 Oct 2026 09:00:00 GMT"}  # materials.json restamped, bytes identical
+        assert run(tmp_path, last_modified=moved) == 0
+        assert not mismatches(caplog)
+        (line,) = [r.getMessage() for r in freshness_lines(caplog) if "source=spoolmandb_materials" in r.getMessage()]
+        assert "status=redeployed" in line
+        assert json.loads((tmp_path / "state.json").read_text())["freshness_mismatches"] == []
+
+    def test_spoolmandb_content_change_under_same_last_modified_still_warns(self) -> None:
+        prev = {"inputs": {"spoolmandb_filaments": ofd2spoolman.input_record(ofd2spoolman.Fetched(b"old", "A"))}}
+        (result,) = ofd2spoolman.check_input_freshness(prev, {"spoolmandb_filaments": ofd2spoolman.Fetched(b"new", "A")})
+        assert (result.status, result.moved) == ("mismatch", "sha256")
+
+    def test_policy_is_per_source(self) -> None:
+        prev = {"inputs": {n: ofd2spoolman.input_record(ofd2spoolman.Fetched(b"x", "A")) for n in ("ofd", "spoolmandb_filaments")}}
+        results = ofd2spoolman.check_input_freshness(
+            prev, {"ofd": ofd2spoolman.Fetched(b"x", "B"), "spoolmandb_filaments": ofd2spoolman.Fetched(b"x", "B")}
+        )
+        assert {r.source: r.status for r in results} == {"ofd": "mismatch", "spoolmandb_filaments": "redeployed"}
+
+    @pytest.mark.parametrize(
+        "inputs",
+        [
+            [],
+            {"ofd": {"last_modified": "A"}},
+            {"ofd": {"last_modified": "A", "sha256": 5}},
+            {"ofd": "oops"},
+            {"ofd": {"last_modified": 5, "sha256": "abc"}},
+            None,
+            {"ofd": None},
+        ],
+        ids=["list", "missing-sha256", "int-sha256", "string-entry", "int-last-modified", "null-inputs", "null-entry"],
+    )
+    def test_malformed_inputs_are_ignored(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture, inputs: Any) -> None:
+        write_state(tmp_path, run_at="2026-10-12T04:00:00+00:00", ofd_version="v0", inputs=inputs)
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, last_modified=LAST_MODIFIED) == 0
+        assert not mismatches(caplog)
+        assert "Traceback" not in caplog.text
+        assert all(len(v["sha256"]) == 64 for v in json.loads((tmp_path / "state.json").read_text())["inputs"].values())
+
+    def test_hash_is_taken_after_gunzip(self) -> None:
+        """Two gzip encodings of the same JSON (different embedded mtime) must hash identically."""
+        import gzip
+
+        raw = b'{"version": "v1"}'
+        a, b = gzip.compress(raw, mtime=1), gzip.compress(raw, mtime=2)
+        assert a != b
+        prev = {"inputs": {"ofd": ofd2spoolman.input_record(ofd2spoolman.Fetched(gzip.decompress(a), "A"))}}
+        (result,) = ofd2spoolman.check_input_freshness(prev, {"ofd": ofd2spoolman.Fetched(gzip.decompress(b), "A")})
+        assert result.status == "unchanged"
+
+    def test_refused_run_leaves_state_byte_identical(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        self._first(run, tmp_path)
+        before = (tmp_path / "state.json").read_bytes()
+        live_before = (tmp_path / "filaments.json").read_bytes()
+        shrunk = with_sdb(sources, filaments=[], materials=json.loads(sources[SDB_M]))
+        moved = {k: v + "x" for k, v in LAST_MODIFIED.items()}
+        assert run(tmp_path, payloads=shrunk, last_modified=moved) in (ofd2spoolman.EXIT_CATALOG_SHRANK, ofd2spoolman.EXIT_SOURCE_SHRANK)
+        assert (tmp_path / "state.json").read_bytes() == before
+        assert (tmp_path / "filaments.json").read_bytes() == live_before
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_publish_sweeps_stale_state_temps(self, tmp_path: Path) -> None:
+        stale, keep = tmp_path / ".state.json.ab12CD_9", tmp_path / ".state.json.short"
+        stale.write_text("x")
+        keep.write_text("x")
+        ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
+        assert not stale.exists()
+        assert keep.exists()

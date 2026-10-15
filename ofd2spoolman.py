@@ -270,7 +270,7 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
     So this order is the less bad one, not a guarantee.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    _sweep_stale_temps(out_dir, list(files))
+    _sweep_stale_temps(out_dir, [*files, STATE_FILE])
     staged: dict[str, str] = {}  # name -> temp path
     backups: dict[str, str] = {}  # name -> hard link to the previous file
     had_previous: dict[str, bool] = {}
@@ -478,11 +478,20 @@ def load_recorded_inputs(raw: Any) -> dict[str, dict[str, str | None]]:
     return inputs
 
 
+# Per-source freshness policy: inputs whose Last-Modified is the host's DEPLOY time, not the time the file's
+# own content changed. GitHub Pages (SpoolmanDB) restamps every file on each deploy, so materials.json gets a
+# new Last-Modified, with identical bytes, whenever filaments.json changes. For these a Last-Modified-only
+# move is expected (status "redeployed", INFO); only changed content under an unchanged Last-Modified is a
+# mismatch. Every other input (OFD) warns on either one-sided move.
+DEPLOY_STAMPED_SOURCES = frozenset({"spoolmandb_filaments", "spoolmandb_materials"})
+
+
 class FreshnessResult(NamedTuple):
     """Outcome of comparing one input with the previous successful run.
 
     status: first (nothing to compare), updated (both moved), unchanged (neither moved),
-    unverifiable (no Last-Modified on one side, so only the content hash is known), mismatch (exactly one moved).
+    unverifiable (no Last-Modified on one side, so only the content hash is known), redeployed (only Last-Modified
+    moved, on a DEPLOY_STAMPED_SOURCES input: expected), mismatch (exactly one moved, and worth a warning).
     """
 
     source: str
@@ -526,6 +535,9 @@ def check_input_freshness(prev_state: dict[str, Any], fetched: dict[str, Fetched
                     status, moved, detail = "updated", None, "Last-Modified and content both moved"
                 elif not lm_moved and not hash_moved:
                     status, moved, detail = "unchanged", None, "Last-Modified and content both identical"
+                elif lm_moved and name in DEPLOY_STAMPED_SOURCES:
+                    status, moved = "redeployed", None
+                    detail = "Last-Modified moved over identical content; expected, the host stamps files with its deploy time"
                 else:
                     status, moved = "mismatch", "last_modified" if lm_moved else "sha256"
                     other = "content hash" if lm_moved else "Last-Modified"
