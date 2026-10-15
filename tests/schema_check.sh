@@ -21,7 +21,8 @@ validate() {
 }
 
 echo "[INFO] building catalog from fixtures"
-python3 "$REPO/ofd2spoolman.py" --out "$WORK/good" --from-ofd-file "$HERE/fixtures/ofd_all.json" --from-sdb-dir "$HERE/fixtures/sdb"
+python3 "$REPO/ofd2spoolman.py" --out "$WORK/good" --from-ofd-file "$HERE/fixtures/ofd_all.json" --from-sdb-dir "$HERE/fixtures/sdb" \
+    --now 2026-10-13T04:00:00Z  # pin the clock: the fixture's generated_at ages into the OFD-stalled warning (exit 10) otherwise
 
 echo "[INFO] good catalog must validate"
 validate "$WORK/good"

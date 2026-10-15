@@ -58,7 +58,57 @@ ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
 LOG_LEVEL=DEBUG ofd2spoolman.py --dry-run
 ```
 
-It uses only the Python standard library (3.11+). Exit codes: 0 ok, 2 fetch/parse failure, 3 duplicate ids, 4 refused to shrink the catalog by more than 50%, 7 refused because the already-published `filaments.json` exists but is unreadable, invalid JSON, not a list, or an empty list (so the shrink guard has no trustworthy baseline). A missing file is a first run and publishes. To recover from 7, inspect or delete the bad `filaments.json` in the output directory and run again; `--dry-run` reports it too.
+It uses only the Python standard library (3.11+).
+
+### Exit codes
+
+| Code | Meaning | Catalog published? |
+|---|---|---|
+| 0 | OK | yes |
+| 2 | fetch/parse failure | no |
+| 3 | duplicate ids | no |
+| 4 | whole catalog would shrink by more than 50% vs the live one | no |
+| 5 | SpoolmanDB superset guard failed: a SpoolmanDB filament id or material is missing or changed in the output | no |
+| 6 | a single source (SpoolmanDB or OFD) shrank by more than 50% vs its last good fetch | no |
+| 7 | the already-published `filaments.json` exists but is unreadable, invalid JSON, not a list, or an empty list, so the shrink guard has no trustworthy baseline; a missing file is a first run and publishes. Recover by inspecting or deleting the bad file (`--dry-run` reports it too) | no |
+| 10 | published, but with warnings (currently: OFD looks stalled) | yes |
+
+Any other, unexpected exception (for example `write_state` failing after the catalog was published) escapes as a Python traceback with exit 1: in that case the catalog is already live but `state.json` is stale, so the next run compares against an old baseline. Code 10 is deliberately far from the failure codes: the run succeeded, but something in the log deserves a look. Cron wrappers should treat 0 and 10 as "published". Guards 5 and 6 also run under `--dry-run`, which then returns the code without writing anything. Alerting on these codes is a separate piece of work (#13).
+
+### Drift checks
+
+- **Superset guard (5).** Spoolman's `EXTERNAL_DB_URL` replaces its default SpoolmanDB, so a SpoolmanDB entry we lose is gone from the dropdown. Every SpoolmanDB filament id must be in the output with identical fields (manufacturer compared after `norm()`, because brand spelling is deliberately unified across sources), and every SpoolmanDB material must be present unchanged. The comparison uses a deep copy taken before the brand rewrite.
+- **Per-source shrink guard (6).** The SpoolmanDB filament count and the OFD converted-filament count are each compared with the counts recorded at the last successful publish. They may keep at least `MIN_RETAINED_FRACTION` (50%) of that: the same constant as the whole-catalog guard. Normal churn (OFD pruning discontinued items) is a few percent, a broken or empty export loses nearly everything, so anything between separates them. With no state file there is no baseline and the guard stays quiet.
+- **OFD stalled (warning, exit 10).** OFD rebuilds daily. If the dataset's own `generated_at` is more than `OFD_STALE_AFTER` (3 days) old, a WARNING is logged and the run exits 10 after publishing. The warning gives the age in hours; an unparseable `generated_at` logs its own WARNING. A `generated_at` in the future never fires (clock skew is not a stall). If `generated_at` is ever absent, the fallback (needs a non-empty `version`) is how long ago this tool first saw the current `version`.
+- **Input freshness (warning only, exit code unchanged).** For each fetched input (the OFD `all.json.gz`, and SpoolmanDB `filaments.json` and `materials.json`) the HTTP `Last-Modified` header and the sha256 of the fetched (gunzipped) bytes are recorded in `state.json` and compared with the previous successful run. Both moved: normal update (INFO). Neither moved: unchanged (INFO). Exactly one moved (the header changed over identical content, or the content changed under the same header): a WARNING with the stable tag `FRESHNESS-MISMATCH source=<ofd|spoolmandb_filaments|spoolmandb_materials> moved=<last_modified|sha256> ...`, also recorded under `freshness_mismatches` in `state.json`. The one exception is SpoolmanDB (`DEPLOY_STAMPED_SOURCES` in the code): GitHub Pages stamps every file with the deploy time, so `materials.json` gets a new `Last-Modified` over identical bytes whenever `filaments.json` changes. For those two inputs a Last-Modified-only move is INFO (`status=redeployed`); changed content under an unchanged `Last-Modified` still warns. OFD warns on both one-sided cases. It never blocks publishing and never changes the exit code; routing it to an alert is later work (#24). First run, no previous record, or a missing `Last-Modified` on either side (always the case with `--from-ofd-file/--from-sdb-dir`) is INFO only, because there is nothing to compare. Grep the log for `FRESHNESS-MISMATCH`.
+- **SpoolmanDB content hash.** `spoolmandb_hash` / `spoolmandb_changed_at` record a hash of the parsed SpoolmanDB data (re-serialised with sorted keys and compact separators, so it ignores key order and whitespace) and when this tool first saw it, for context only. It is a different hash from `inputs.spoolmandb_*.sha256`, which is taken over the fetched bytes.
+- **Resetting exit 6.** The per-source baseline only moves on a successful publish, so after a legitimate large drop exit 6 repeats on every run until you accept the new size: delete `OUT_DIR/state.json` (the next run has no baseline and publishes, then records fresh counts). A corrupt or old-schema `state.json` is handled the same way: the unusable parts are ignored with a WARNING, never a crash.
+
+### State file
+
+After each successful publish `OUT_DIR/state.json` is written atomically next to the catalog (and is served by the static server; it is harmless to Spoolman). Never written on `--dry-run` or a refused run, so it always describes the last good publish.
+
+Illustrative values:
+
+```json
+{
+  "run_at": "2026-10-13T04:01:57+00:00",
+  "ofd_version": "2026.10.13",
+  "ofd_generated_at": "2026-10-13T03:01:57Z",
+  "ofd_version_changed_at": "2026-10-13T04:01:57+00:00",
+  "spoolmandb_hash": "<sha256 of the parsed, sorted-key SpoolmanDB filaments+materials; context only>",
+  "spoolmandb_changed_at": "2026-10-13T04:01:57+00:00",
+  "inputs": {
+    "ofd": {"last_modified": "Tue, 13 Oct 2026 03:02:10 GMT", "sha256": "<sha256 of the gunzipped all.json>"},
+    "spoolmandb_filaments": {"last_modified": "Mon, 12 Oct 2026 18:20:41 GMT", "sha256": "<sha256 of the fetched bytes>"},
+    "spoolmandb_materials": {"last_modified": "Mon, 12 Oct 2026 18:20:41 GMT", "sha256": "<sha256 of the fetched bytes>"}
+  },
+  "freshness_mismatches": [],
+  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 22980}
+}
+```
+
+`ofd_filaments` counts the OFD rows *converted* (22,980 on the live dataset), not the entries added after deduping against SpoolmanDB; it depends on `--include-discontinued`, so switching that flag changes the baseline and can trip exit 6 (or mask a real drop) once; delete `state.json` when changing it. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has. `inputs` is shaped to map onto the planned manifest (#24): per input `last_modified` and `sha256`. `last_modified` is `null` when the server sent none.
 
 ### Deploying alongside Spoolman (docker compose)
 
