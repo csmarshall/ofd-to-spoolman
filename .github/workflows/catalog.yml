@@ -162,7 +162,7 @@ jobs:
               print(f"catalog/{name}: {len(data)} records, sha256 matches state.json")
           PY
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: catalog
       - id: deployment
