@@ -6,3 +6,5 @@ __pycache__/
 *.log
 session-state.md
 *.egg-info/
+CLAUDE.local.md
+install.local

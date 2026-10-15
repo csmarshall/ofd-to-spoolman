@@ -219,6 +219,12 @@ class TestMain:
         assert ofd2spoolman.main(argv, now=FIXTURE_NOW) == 0
         assert len(load(tmp_path)) == 10
 
+    def test_out_is_required(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as exc:
+            ofd2spoolman.main(["--dry-run"])
+        assert exc.value.code == 2
+        assert "--out" in capsys.readouterr().err
+
     def test_disk_sources_options_must_pair(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit) as exc:
             ofd2spoolman.main(["--out", str(tmp_path), "--from-ofd-file", "x.json"])

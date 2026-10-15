@@ -54,8 +54,8 @@ SpoolmanDB entries are passed through unchanged apart from brand spelling. When 
 ## Usage
 
 ```
-ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
-LOG_LEVEL=DEBUG ofd2spoolman.py --dry-run
+ofd2spoolman.py --out DIR [--dry-run] [--include-discontinued]
+LOG_LEVEL=DEBUG ofd2spoolman.py --out DIR --dry-run
 ```
 
 It uses only the Python standard library (3.11+).
@@ -131,7 +131,7 @@ Then run it daily, after OFD's ~03:00 UTC rebuild:
 15 23 * * * /usr/bin/python3 -I /path/to/ofd2spoolman.py --out /path/to/catalog > /path/to/catalog-build.log 2>&1
 ```
 
-`./install.sh` copies the script to the author's deploy location, and `./install.sh --check` reports drift.
+`./install.sh --target /path/to/ofd2spoolman.py` copies the script into place with a "managed, do not edit" header, and `./install.sh --check --target ...` reports drift. To avoid repeating the path, put `TARGET=/path/to/ofd2spoolman.py` in a gitignored `install.local` file next to `install.sh`. `--out` is required: there is no default output directory.
 
 ## Limitations
 
