@@ -10,7 +10,8 @@ live on other models and columns.
 The UI mapping is read from the compiled client bundle (client/dist/assets/functions-*.js): spool_weight / extruder_temp / bed_temp
 use `||void 0` (0 or null is omitted), external_id is the record id, vendor_id comes from the vendor. Deliberate difference: the UI
 sends only color_hex when both colour fields are set and silently drops the others, which would hide ambiguous data, so here both are
-passed through and the model rejects it. What this cannot catch: a change in the client bundle's mapping (it is replicated by hand,
+passed through and the model rejects it. Second deliberate deviation: a multi_color_direction with no colour list is sent and rejected
+("Single-color filament must not have multi_color_direction set"); the UI would drop it. What this cannot catch: a change in the client bundle's mapping (it is replicated by hand,
 not imported), or limits enforced only at the database.
 
 Usage:

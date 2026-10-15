@@ -222,7 +222,8 @@ NAME_MAX_LENGTH = 64
 ELLIPSIS = "…"
 # Share of the budget reserved for the end of an elided name, so a trailing colour survives.
 ELIDED_TAIL_BUDGET = NAME_MAX_LENGTH // 3
-_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\([^()]*\)\s*$")
+# "(refill)" is a marker convert_ofd adds, not a colour list: it is never dropped.
+_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\((?!refill\))[^()]*\)\s*$")
 _EXAMPLES_LOGGED = 5
 
 

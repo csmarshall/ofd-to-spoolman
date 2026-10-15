@@ -165,19 +165,19 @@ class TestConvertOfd:
         entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
         names = {e["name"] for e in entries}
         assert "Mystery" not in names and "Pink" not in names  # filament without density
-        assert len(entries) == 12  # 15 sizes - no density - no weight - dangling
+        assert len(entries) == 14  # 17 sizes - no density - no weight - dangling
 
     def test_discontinued_filtered_by_default(self, ofd: dict[str, Any]) -> None:
         names = {e["name"] for e in ofd2spoolman.convert_ofd(ofd, include_discontinued=False)}
         assert "PLA Matte Retired Blue" not in names  # discontinued variant
         assert "Old PLA Green" not in names and "PLA Green" not in names  # discontinued filament
-        assert len(names) == 9
+        assert len(names) == 11
 
     def test_include_discontinued_keeps_them(self, ofd: dict[str, Any]) -> None:
         entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
         names = {e["name"] for e in entries}
         assert {"PLA Matte Retired Blue", "Old PLA Green"} <= names
-        assert len(entries) == 12
+        assert len(entries) == 14
 
 
 class TestMergeMaterials:
@@ -197,7 +197,7 @@ class TestMain:
     def test_end_to_end_merge(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
         filaments = load(tmp_path)
-        assert len(filaments) == 10
+        assert len(filaments) == 12
         assert len({f["id"] for f in filaments}) == len(filaments)
         assert [m["material"] for m in load(tmp_path, "materials.json")] == ["PLA", "PETG", "TPU95"]
 
@@ -235,8 +235,8 @@ class TestMain:
         default, with_disc = tmp_path / "default", tmp_path / "disc"
         assert run(default) == 0
         assert run(with_disc, "--include-discontinued") == 0
-        assert len(load(default)) == 10
-        assert len(load(with_disc)) == 13
+        assert len(load(default)) == 12
+        assert len(load(with_disc)) == 15
 
     def test_dry_run_writes_nothing(self, run: RunFn, tmp_path: Path) -> None:
         out = tmp_path / "out"
@@ -247,7 +247,7 @@ class TestMain:
         fixtures = Path(__file__).parent / "fixtures"
         argv = ["--out", str(tmp_path), "--from-ofd-file", str(fixtures / "ofd_all.json"), "--from-sdb-dir", str(fixtures / "sdb")]
         assert ofd2spoolman.main(argv, now=FIXTURE_NOW) == 0
-        assert len(load(tmp_path)) == 10
+        assert len(load(tmp_path)) == 12
 
     def test_out_is_required(self, capsys: pytest.CaptureFixture[str]) -> None:
         with pytest.raises(SystemExit) as exc:
@@ -293,7 +293,7 @@ class TestGuards:
         assert not (tmp_path / "out").exists()
 
     def test_shrink_over_half_exits_4_and_leaves_files_untouched(self, run: RunFn, tmp_path: Path) -> None:
-        before = self.seed(tmp_path, 25)  # fixtures produce 10, below 25 // 2
+        before = self.seed(tmp_path, 30)  # fixtures produce 12, below 30 // 2
         assert run(tmp_path) == 4
         assert (tmp_path / "filaments.json").read_bytes() == before[0]
         assert (tmp_path / "materials.json").read_bytes() == before[1]
@@ -301,11 +301,11 @@ class TestGuards:
     def test_shrink_at_exactly_half_is_allowed(self, run: RunFn, tmp_path: Path) -> None:
         self.seed(tmp_path, 20)  # 10 is not < 20 // 2
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 10
+        assert len(load(tmp_path)) == 12
 
     def test_missing_published_file_is_first_run_and_publishes(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 10
+        assert len(load(tmp_path)) == 12
 
     @pytest.mark.parametrize(
         "content",
@@ -334,7 +334,7 @@ class TestGuards:
         assert run(tmp_path) == 7
         (tmp_path / "filaments.json").unlink()
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 10
+        assert len(load(tmp_path)) == 12
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
     def test_unreadable_published_file_exits_7(self, run: RunFn, tmp_path: Path) -> None:
@@ -729,7 +729,7 @@ class TestStateAndFreshness:
         assert state["ofd_generated_at"] == "2026-10-13T03:01:57Z"
         assert state["run_at"] == "2026-10-13T04:01:57+00:00"
         assert state["counts"]["spoolmandb_filaments"] == 2
-        assert state["counts"]["ofd_filaments"] == 9
+        assert state["counts"]["ofd_filaments"] == 11
         assert len(state["spoolmandb_hash"]) == 64
 
     def test_dry_run_writes_no_state(self, run: RunFn, tmp_path: Path) -> None:
@@ -762,7 +762,7 @@ class TestStateAndFreshness:
     def test_ofd_stalled_warns_but_still_publishes(self, run: RunFn, tmp_path: Path) -> None:
         code = run(tmp_path, now=FIXTURE_NOW + ofd2spoolman.OFD_STALE_AFTER + timedelta(days=1))
         assert code == ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS == 10
-        assert len(load(tmp_path)) == 10
+        assert len(load(tmp_path)) == 12
         assert (tmp_path / "state.json").exists()
 
     def test_ofd_fresh_is_quiet(self, run: RunFn, tmp_path: Path) -> None:

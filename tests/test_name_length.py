@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import ofd2spoolman
-from ofd2spoolman import NAME_MAX_LENGTH, shorten_long_names, shorten_name
+from ofd2spoolman import ELLIPSIS, NAME_MAX_LENGTH, _digest_tagged, _elision_candidates, shorten_long_names, shorten_name
 
 ROSA_NAME = "Impact Abrasive Uv H2O Microbe Resistant ROSA TPU HardTech+ 83D Neon Yellow"
 
@@ -158,6 +158,56 @@ def test_collision_fallback_still_unique_when_every_cut_collides() -> None:
     assert all(len(n) <= NAME_MAX_LENGTH for n in result)
     assert any("~" in n for n in result)
     assert shorten_name(names[0]) in result  # the first in sorted order keeps the plain elision
+
+
+def test_fixed_record_holding_the_plain_elision_forces_a_shifted_cut() -> None:
+    plain = shorten_name(ROSA_NAME)
+    fixed = [named("sdb", plain)]
+    records = [named("a", ROSA_NAME)]
+    shorten_long_names(records, fixed=fixed)
+    result = records[0]["name"]
+    assert result != plain and len(result) <= NAME_MAX_LENGTH
+    assert "~" not in result  # a shifted cut was available, so no digest
+    assert fixed[0]["name"] == plain
+
+
+def test_every_candidate_taken_by_fixed_records_gives_the_digest_tag() -> None:
+    fixed = [named(f"sdb{i}", c) for i, c in enumerate(_elision_candidates(ROSA_NAME))]
+    assert len(fixed) > 1
+    records = [named("a", ROSA_NAME)]
+    shorten_long_names(records, fixed=fixed)
+    assert records[0]["name"] == _digest_tagged(ROSA_NAME, 4)
+    assert len(records[0]["name"]) <= NAME_MAX_LENGTH
+
+
+def test_digest_length_grows_until_the_tag_is_free() -> None:
+    taken = [*_elision_candidates(ROSA_NAME), _digest_tagged(ROSA_NAME, 4), _digest_tagged(ROSA_NAME, 5)]
+    fixed = [named(f"sdb{i}", c) for i, c in enumerate(taken)]
+    records = [named("a", ROSA_NAME)]
+    shorten_long_names(records, fixed=fixed)
+    assert records[0]["name"] == _digest_tagged(ROSA_NAME, 6)
+    assert len(records[0]["name"]) <= NAME_MAX_LENGTH
+
+
+def test_shifted_cuts_always_keep_a_tail_of_whole_words() -> None:
+    name = f"{'a' * 70}A{'b' * 10} Red"
+    candidates = _elision_candidates(name)
+    assert candidates[0] == shorten_name(name)
+    words = name.split()
+    whole_tails = {" ".join(words[-k:]) for k in range(1, len(words) + 1)}
+    for candidate in candidates[1:]:
+        assert candidate.rsplit(ELLIPSIS + " ", 1)[1] in whole_tails
+    # A character-cut tail such as "… d" would otherwise sneak in for this single over-long word.
+    assert all(not c.endswith("… d") for c in candidates)
+
+
+def test_refill_marker_is_never_dropped_as_a_parenthetical() -> None:
+    name = "PLA Silk High-Speed Quadruple Twilight Gorgeous Harmony Red (refill)"
+    assert len(name) > NAME_MAX_LENGTH
+    records = [named("a", name)]
+    changes = shorten_long_names(records)
+    assert changes[0][3] == "elided"
+    assert records[0]["name"].endswith("(refill)") and len(records[0]["name"]) <= NAME_MAX_LENGTH
 
 
 def test_logs_count_and_examples(caplog: pytest.LogCaptureFixture) -> None:
