@@ -40,6 +40,25 @@ class TestDisplayName:
         """Regression: norm() once stripped '+', making 'PETG+' look like bare 'PETG' and dropping it."""
         assert display_name("PETG+", "Acme", "PETG", "Black") == "PETG+ Black"
 
+    def test_brand_that_prefixes_a_product_word_is_not_stripped(self) -> None:
+        """Regression #11: 'Acme' must not be cut out of 'Acmeflex'."""
+        assert display_name("Acmeflex PLA", "Acme", "PLA", "Red") == "Acmeflex PLA Red"
+
+    def test_brand_with_digits_and_hyphen_stripped(self) -> None:
+        assert display_name("123-3D Filament PLA", "123-3D", "PLA", "Red") == "Filament PLA Red"
+
+    def test_brand_with_spaced_hyphen_stripped(self) -> None:
+        assert display_name("Brand - PLA", "Brand", "PLA", "Red") == "Red"
+
+    def test_brand_directly_followed_by_hyphen_stripped(self) -> None:
+        assert display_name("Brand-PLA", "Brand", "PLA", "Red") == "Red"
+
+    def test_brand_only_name_stripped(self) -> None:
+        assert display_name("Brand", "Brand", "PLA", "Red") == "Red"
+
+    def test_brand_underscore_separator_stripped_case_insensitive(self) -> None:
+        assert display_name("brand_PLA", "Brand", "PLA", "Red") == "Red"
+
     def test_bare_material_without_brand_dropped(self) -> None:
         assert display_name("PETG", "Acme", "PETG", "Black") == "Black"
 

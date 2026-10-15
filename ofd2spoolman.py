@@ -113,7 +113,7 @@ def display_name(filament_name: str, brand_name: str, material: str, colour: str
     like "PETG+" or "PLA Matte" survive intact.
     """
     line = filament_name.strip()
-    if line.lower().startswith(brand_name.lower()):
+    if re.match(rf"{re.escape(brand_name)}(?=[\s_-]|$)", line, re.IGNORECASE):
         line = line[len(brand_name) :].strip(" -_")
     if norm(line) == norm(material):
         line = ""
