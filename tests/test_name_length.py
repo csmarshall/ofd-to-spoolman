@@ -228,7 +228,7 @@ def test_spoolmandb_over_64_warns_and_is_not_altered(
     with caplog.at_level(logging.WARNING):
         assert run(tmp_path) == 0
     out = json.loads((tmp_path / "filaments.json").read_text())
-    assert out[0]["name"] == "S" * 70
+    assert {f["id"]: f for f in out}[sdb[0]["id"]]["name"] == "S" * 70  # output is sorted by id, so find it by id
     assert "SpoolmanDB" in caplog.text and "64" in caplog.text
 
 

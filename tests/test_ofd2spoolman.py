@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -228,8 +229,8 @@ class TestMain:
     def test_spoolmandb_entries_pass_through_unchanged(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
         assert run(tmp_path) == 0
         original = json.loads(sources[ofd2spoolman.SPOOLMANDB_URL + "filaments.json"])
-        out = load(tmp_path)
-        assert out[: len(original)] == original
+        out = {f["id"]: f for f in load(tmp_path)}
+        assert [out[f["id"]] for f in original] == original
 
     def test_discontinued_flag(self, run: RunFn, tmp_path: Path) -> None:
         default, with_disc = tmp_path / "default", tmp_path / "disc"
@@ -354,16 +355,54 @@ class TestPublish:
         for p in tmp_path.iterdir():
             assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
-    def test_output_is_compact_json(self, run: RunFn, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("name", ["filaments.json", "materials.json"])
+    def test_output_is_one_compact_record_per_line(self, run: RunFn, tmp_path: Path, name: str) -> None:
         assert run(tmp_path) == 0
-        text = (tmp_path / "filaments.json").read_text()
-        assert json.dumps(json.loads(text), separators=(",", ":")) == text
+        text = (tmp_path / name).read_text()
+        records = json.loads(text)
+        lines = text.split("\n")
+        assert lines[0] == "[" and lines[-2:] == ["]", ""]
+        assert len(lines) == len(records) + 3
+        for line, record in zip(lines[1:-2], records, strict=True):
+            assert line.rstrip(",") == json.dumps(record, separators=(",", ":"))
+            assert line.endswith(",") == (record is not records[-1])
+
+    def test_filaments_sorted_by_id(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        ids = [f["id"] for f in load(tmp_path)]
+        assert ids == sorted(ids)
+
+    def test_output_is_byte_deterministic(self, run: RunFn, tmp_path: Path) -> None:
+        first, second = tmp_path / "a", tmp_path / "b"
+        assert run(first) == 0
+        assert run(second) == 0
+        for name in ("filaments.json", "materials.json"):
+            assert (first / name).read_bytes() == (second / name).read_bytes()
+
+    def test_rerun_over_its_own_output_is_a_no_op(self, run: RunFn, tmp_path: Path) -> None:
+        """The committed catalog is the next run's baseline: a second pass must read it and rewrite identical bytes."""
+        assert run(tmp_path) == 0
+        before = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.name != "state.json"}
+        assert run(tmp_path) == 0
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.name != "state.json"} == before
+
+    def test_empty_list_serialises_as_valid_json(self, tmp_path: Path) -> None:
+        ofd2spoolman.publish(tmp_path, {"a.json": []})
+        assert json.loads((tmp_path / "a.json").read_text()) == []
+
+    def test_state_records_output_digests_and_counts(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        outputs = json.loads((tmp_path / "state.json").read_text())["outputs"]
+        assert sorted(outputs) == ["filaments.json", "materials.json"]
+        for name, record in outputs.items():
+            assert record["sha256"] == hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            assert record["count"] == len(json.loads((tmp_path / name).read_text()))
 
     def test_replaces_existing_file_via_rename(self, tmp_path: Path) -> None:
         (tmp_path / "a.json").write_text("old")
         inode_before = (tmp_path / "a.json").stat().st_ino
         ofd2spoolman.publish(tmp_path, {"a.json": [1]})
-        assert (tmp_path / "a.json").read_text() == "[1]"
+        assert json.loads((tmp_path / "a.json").read_text()) == [1]
         assert (tmp_path / "a.json").stat().st_ino != inode_before  # new file renamed in, not rewritten in place
         assert [p.name for p in tmp_path.iterdir()] == ["a.json"]
 
@@ -420,23 +459,23 @@ class TestPublishAtomicPair:
         self._seed(tmp_path)
         ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2, 3]})
         assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
-        assert (tmp_path / "filaments.json").read_text() == "[1]"
-        assert (tmp_path / "materials.json").read_text() == "[2,3]"
+        assert (tmp_path / "filaments.json").read_text() == "[\n1\n]\n"
+        assert (tmp_path / "materials.json").read_text() == "[\n2,\n3\n]\n"
         for p in tmp_path.iterdir():
             assert stat.S_IMODE(p.stat().st_mode) == 0o644
 
     def test_json_dump_failure_leaves_no_temp_and_old_pair(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed(tmp_path)
-        real_dump = json.dump
+        real_dump = ofd2spoolman.serialise
         calls = []
 
-        def flaky_dump(*args: Any, **kwargs: Any) -> None:
+        def flaky_dump(records: list[Any]) -> str:
             calls.append(1)
             if len(calls) == 2:
                 raise RuntimeError("boom")
-            real_dump(*args, **kwargs)
+            return real_dump(records)
 
-        monkeypatch.setattr(ofd2spoolman.json, "dump", flaky_dump)
+        monkeypatch.setattr(ofd2spoolman, "serialise", flaky_dump)
         with pytest.raises(RuntimeError):
             ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
         self._assert_old_pair(tmp_path)
@@ -444,10 +483,10 @@ class TestPublishAtomicPair:
     def test_first_json_dump_failure_leaves_no_temp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed(tmp_path)
 
-        def bad_dump(*args: Any, **kwargs: Any) -> None:
+        def bad_dump(records: list[Any]) -> str:
             raise RuntimeError("boom")
 
-        monkeypatch.setattr(ofd2spoolman.json, "dump", bad_dump)
+        monkeypatch.setattr(ofd2spoolman, "serialise", bad_dump)
         with pytest.raises(RuntimeError):
             ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
         self._assert_old_pair(tmp_path)
@@ -519,7 +558,7 @@ class TestPublishAtomicPair:
             ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
         assert any("MISMATCH" in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
         # On disk: new materials, old filaments; the unrestored backup is kept for recovery.
-        assert (tmp_path / "materials.json").read_text() == "[2]"
+        assert (tmp_path / "materials.json").read_text() == "[\n2\n]\n"
         assert (tmp_path / "filaments.json").read_text() == "old-f"
         assert [p.read_text() for p in tmp_path.glob(".materials.json.*.old")] == ["old-m"]
         assert not list(tmp_path.glob(".filaments.json.*"))
@@ -572,20 +611,20 @@ class TestPublishAtomicPair:
         with caplog.at_level("ERROR"), pytest.raises(OSError):
             ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})
         assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
-        assert (tmp_path / "materials.json").read_text() == "[2]"  # new file left in place, not deleted
+        assert (tmp_path / "materials.json").read_text() == "[\n2\n]\n"  # new file left in place, not deleted
         assert any("MISMATCH" in r.getMessage() for r in caplog.records if r.levelname == "ERROR")
 
     def test_cleanup_failure_does_not_mask_error_or_skip_later_leftovers(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed(tmp_path)
-        real_dump = json.dump
+        real_dump = ofd2spoolman.serialise
         real_unlink = ofd2spoolman.os.unlink
         calls = []
 
-        def flaky_dump(*args: Any, **kwargs: Any) -> None:
+        def flaky_dump(records: list[Any]) -> str:
             calls.append(1)
             if len(calls) == 2:
                 raise RuntimeError("boom")
-            real_dump(*args, **kwargs)
+            return real_dump(records)
 
         def flaky_unlink(path: Any) -> None:
             if not getattr(flaky_unlink, "failed", False):
@@ -593,7 +632,7 @@ class TestPublishAtomicPair:
                 raise PermissionError("nope")
             real_unlink(path)
 
-        monkeypatch.setattr(ofd2spoolman.json, "dump", flaky_dump)
+        monkeypatch.setattr(ofd2spoolman, "serialise", flaky_dump)
         monkeypatch.setattr(ofd2spoolman.os, "unlink", flaky_unlink)
         with pytest.raises(RuntimeError):
             ofd2spoolman.publish(tmp_path, {"filaments.json": [1], "materials.json": [2]})

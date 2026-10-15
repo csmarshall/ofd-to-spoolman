@@ -410,7 +410,17 @@ def _sweep_stale_temps(out_dir: Path, names: Sequence[str]) -> None:
                     log.warning("could not remove stale leftover %s: %s", entry, exc)
 
 
-def publish(out_dir: Path, files: dict[str, Any]) -> None:
+def serialise(records: list[Any]) -> str:
+    """One compact JSON record per line (still a valid JSON array), so git diffs of the catalog are readable.
+
+    Deterministic: the same records always give the same bytes, which keeps committed history free of noise.
+    """
+    if not records:
+        return "[]\n"
+    return "[\n" + ",\n".join(json.dumps(r, separators=(",", ":")) for r in records) + "\n]\n"
+
+
+def publish(out_dir: Path, files: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Publish the files as a pair: stage every temp file completely, then rename them back to back.
 
     Two renames are still not one atomic operation. If the process dies between them the pair is
@@ -422,18 +432,23 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
     filaments only works for materials the old filaments still reference (merge_materials regenerates
     the set), whereas new filaments pointing at materials the old materials.json lacks would fail.
     So this order is the less bad one, not a guarantee.
+
+    Returns {name: {"count", "sha256"}} for the bytes written, for the state file's provenance record.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     _sweep_stale_temps(out_dir, [*files, STATE_FILE])
     staged: dict[str, str] = {}  # name -> temp path
     backups: dict[str, str] = {}  # name -> hard link to the previous file
+    outputs: dict[str, dict[str, Any]] = {}
     had_previous: dict[str, bool] = {}
     try:
         for name, payload in files.items():
             fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{name}.")
             staged[name] = tmp
-            with os.fdopen(fd, "w") as fh:
-                json.dump(payload, fh, separators=(",", ":"))
+            data = serialise(payload).encode()
+            outputs[name] = {"count": len(payload), "sha256": hashlib.sha256(data).hexdigest()}
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
             os.chmod(tmp, 0o644)
 
         for name in staged:
@@ -460,6 +475,7 @@ def publish(out_dir: Path, files: dict[str, Any]) -> None:
             renamed.append(name)
         for name, payload in files.items():
             log.info("published %s (%d entries)", out_dir / name, len(payload))
+        return outputs
     finally:
         for leftover in [*staged.values(), *backups.values()]:
             try:
@@ -742,6 +758,7 @@ def build_state(
     sdb_materials: list[dict[str, Any]],
     ofd_count: int,
     freshness: list[FreshnessResult],
+    outputs: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """The state to record after a successful publish; *_changed_at only moves when the value does."""
     stamp = now.isoformat(timespec="seconds")
@@ -765,6 +782,7 @@ def build_state(
             "spoolmandb_materials": len(sdb_materials),
             "ofd_filaments": ofd_count,
         },
+        "outputs": outputs,
     }
 
 
@@ -920,8 +938,8 @@ def main(
     if args.dry_run:
         log.info("dry run: nothing written")
         return exit_code
-    publish(args.out, {"filaments.json": filaments, "materials.json": materials})
-    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments), freshness))
+    outputs = publish(args.out, {"filaments.json": sorted(filaments, key=lambda f: f["id"]), "materials.json": materials})
+    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments), freshness, outputs))
     return exit_code
 
 

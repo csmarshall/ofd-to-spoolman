@@ -30,6 +30,8 @@ flowchart TD
 
 A fetch or parse failure also exits non-zero without touching the published files.
 
+Both output files are written one compact record per line (still a valid JSON array) and `filaments.json` is sorted by id, so the bytes are deterministic and diffs are readable. Spoolman parses it like any other JSON.
+
 ### Field mapping (OFD → Spoolman `ExternalFilament`)
 
 | Spoolman | From OFD | Notes |
@@ -108,13 +110,75 @@ Illustrative values:
     "spoolmandb_materials": {"last_modified": "Mon, 12 Oct 2026 18:20:41 GMT", "sha256": "<sha256 of the fetched bytes>"}
   },
   "freshness_mismatches": [],
-  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 22980}
+  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 22980},
+  "outputs": {
+    "filaments.json": {"count": 29490, "sha256": "<sha256 of the published file>"},
+    "materials.json": {"count": 97, "sha256": "<sha256 of the published file>"}
+  },
+  "sources": {
+    "ofd": {"tag": "dataset-v2026.10.13", "commit": "<commit behind that tag, or null>"},
+    "spoolmandb": {"commit": "<commit its latest github-pages deployment served, or null>"}
+  },
+  "converter": {"commit": "<last commit that changed ofd2spoolman.py>"}
 }
 ```
 
-`ofd_filaments` counts the OFD rows *converted* (22,980 on the live dataset), not the entries added after deduping against SpoolmanDB; it depends on `--include-discontinued`, so switching that flag changes the baseline and can trip exit 6 (or mask a real drop) once; delete `state.json` when changing it. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has. `inputs` is shaped to map onto the planned manifest (#24): per input `last_modified` and `sha256`. `last_modified` is `null` when the server sent none.
+`ofd_filaments` counts the OFD rows *converted* (22,980 on the live dataset), not the entries added after deduping against SpoolmanDB; it depends on `--include-discontinued`, so switching that flag changes the baseline and can trip exit 6 (or mask a real drop) once; delete `state.json` when changing it. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has. `last_modified` is `null` when the server sent none. `outputs` is written by `ofd2spoolman.py` (count and sha256 of the exact bytes published). `sources` and `converter` are not: they need GitHub API lookups, so `catalog_provenance.py annotate` adds them in the hosted-catalog workflow (a standalone cron run does not have them). This one file is the hosted catalog's provenance record, there is deliberately no separate manifest to drift out of sync with it.
 
-### Deploying alongside Spoolman (docker compose)
+## Hosted catalog (GitHub Pages)
+
+A scheduled GitHub Action ([.github/workflows/catalog.yml](.github/workflows/catalog.yml)) builds the catalog nightly and serves it from GitHub Pages. To use it, point Spoolman at it:
+
+```
+EXTERNAL_DB_URL=https://csmarshall.github.io/ofd-to-spoolman/
+```
+
+This is a convenience, not a service: availability is best-effort, there is no SLA, and the data is only as good as OFD's and SpoolmanDB's. If you need certainty, run `ofd2spoolman.py` yourself (see Usage) and serve its output.
+
+### How the nightly works
+
+```mermaid
+flowchart TD
+    CRON["05:30 UTC nightly<br/>or workflow_dispatch"] --> BUILD["build job:<br/>ofd2spoolman.py --out catalog<br/>(committed catalog/ is the baseline)"]
+    BUILD --> GUARD{"exit code 0 or 10?<br/>fetch, duplicate ids, shrink,<br/>superset, corrupt baseline"}
+    GUARD -- "no: any other exit" --> FAIL["run fails visibly,<br/>deploy skipped,<br/>last good catalog stays live"]
+    GUARD -- "yes (10 adds a warning annotation,<br/>freshness is report-only)" --> PROV["add upstream and converter<br/>commits to state.json"]
+    PROV --> CHANGED{"filaments or materials bytes<br/>or OFD version changed?"}
+    CHANGED -- no --> NOCOMMIT["no commit<br/>(state.json restored)"]
+    CHANGED -- yes --> COMMIT["commit catalog/ to main<br/>(fails if anything else is staged)"]
+    NOCOMMIT --> PINNED
+    COMMIT --> PINNED{"CATALOG_PIN set?"}
+    PINNED -- no --> DEPLOYHEAD["deploy catalog/ from the<br/>commit just built"]
+    PINNED -- yes --> DEPLOYPIN["deploy catalog/ from the<br/>pinned commit"]
+    ROLLBACK["workflow_dispatch<br/>deploy_ref=commit"] --> DEPLOYREF["deploy catalog/ from<br/>that commit"]
+```
+
+`catalog/` on `main` holds `filaments.json` (one record per line, sorted by id, so diffs are readable), `materials.json` and `state.json`. The Action commits only when `filaments.json` or `materials.json` changed or the OFD dataset version moved; a change in provenance alone (for example SpoolmanDB's deployment commit moving on a docs-only commit) does not create a commit. What Pages serves is exactly what is committed. The bot commits to `main`, but CI ignores `catalog/**`, and the commit step fails if any path other than a visible file in `catalog/` is staged. Any exit code other than 0 or 10 from `ofd2spoolman.py` (a fetch failure, 2, as well as the guards, 3-7) fails the run, skips the deploy and leaves the previous catalog live. Exit 10 (published with warnings, e.g. OFD looks stalled) still commits and deploys, and shows up as a warning annotation on the run. A nightly with no content change still redeploys the committed catalog, which repairs a failed earlier deploy.
+
+The schedule is 05:30 UTC because OFD's dataset releases have landed between about 01:00 and 03:03 UTC, which leaves roughly 2.5 hours of margin.
+
+### Reading the history
+
+`git log --oneline -- catalog/` is the index; each subject names the inputs:
+
+```
+catalog: OFD 2026.10.13 (db31453) + SpoolmanDB 8f1a99f + ofd2spoolman 3a3f2a2
+```
+
+That is the OFD dataset version (and the commit behind its `dataset-v<version>` tag), the SpoolmanDB commit its Pages build served, and the last commit that changed the converter. `git log -p -- catalog/filaments.json` shows which filaments appeared, changed or vanished and when. `catalog/state.json` (also served on Pages) is the provenance record for the commit it sits in: the `sources` and `converter` blocks carry the full commit hashes, `inputs` the Last-Modified and sha256 of each fetched file, and `outputs` the count and sha256 of each published file.
+
+### Rolling back
+
+1. Find the good commit: `git log --oneline -- catalog/`.
+2. Pin it first: `gh variable set CATALOG_PIN --body <commit>`. From now on the nightly still builds and commits, but deploys `catalog/` from the pinned commit instead of the one it just built. Only a 7-40 digit hex hash of a commit on `main` is accepted, otherwise the deploy fails.
+3. Deploy it now: `gh workflow run catalog.yml -f deploy_ref=<commit>` (Actions, "catalog", "Run workflow" from `main`). This only deploys, it does not build or commit. Setting the pin first means a nightly that starts in between already deploys the right commit. The workflow does not set the variable itself, because the built-in `GITHUB_TOKEN` cannot write repository variables and a personal access token stored as a secret is a bigger exposure than one manual command.
+4. To resume: `gh variable delete CATALOG_PIN`; the next nightly (or a manual run without `deploy_ref`) deploys the newest catalog again.
+
+Gotcha: the nightly builds against the committed `catalog/` on `main`, not against what is deployed, so while pinned the bad commit is still the guard baseline. If the bad commit INFLATED the catalog (for example a duplicated or runaway source), later correct builds will look like a more-than-50% shrink and trip the guards (exit 4 or 6) until the bad commit is `git revert`ed on `main`. A bad commit that shrank the catalog does not have this problem: the guards compare against a smaller baseline.
+
+GitHub disables scheduled workflows on public repositories after 60 days without repository activity; the catalog commits count as activity, but hopefully check the Actions tab if the catalog ever looks stale.
+
+## Deploying alongside Spoolman (docker compose)
 
 See [`deploy/docker-compose.example.yml`](deploy/docker-compose.example.yml). In short:
 

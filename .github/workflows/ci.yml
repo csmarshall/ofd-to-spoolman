@@ -3,7 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ["catalog/**"] # the nightly catalog commits must not run the test matrix
   pull_request:
+    paths-ignore: ["catalog/**"]
 
 permissions:
   contents: read
