@@ -1,0 +1,169 @@
+name: catalog
+
+# Builds the merged OFD + SpoolmanDB catalog nightly, commits its history into catalog/ on main (only when the
+# data or the OFD version changed) and serves catalog/ through GitHub Pages. OFD releases its dataset between
+# about 01:00 and 03:03 UTC; 05:30 UTC leaves roughly 2.5 hours of margin after the latest release seen (04:30 left
+# about 1.5). Rollback: set the repo variable CATALOG_PIN=<commit>, then run this workflow with deploy_ref=<commit>.
+# While CATALOG_PIN is set the nightly still builds and commits, but deploys catalog/ from the pinned commit (see README).
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+    inputs:
+      deploy_ref:
+        description: "Rollback: deploy catalog/ as committed at this commit (must be on main). Leave empty for a normal build."
+        required: false
+        default: ""
+        type: string
+
+# Both jobs write to main or to the Pages site; never let two runs interleave, and never cancel one mid-push.
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  build:
+    # A rollback dispatch only deploys; it does not build or commit.
+    if: github.ref == 'refs/heads/main' && inputs.deploy_ref == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # the converter commit is the last commit that touched ofd2spoolman.py
+          persist-credentials: false # the commit step authenticates its own push
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Note a pinned catalog
+        if: vars.CATALOG_PIN != ''
+        run: echo "::notice title=Catalog pinned::CATALOG_PIN is set, so this run builds and commits but deploys the pinned commit, not the new one. Clear the variable to resume."
+        env:
+          CATALOG_PIN: ${{ vars.CATALOG_PIN }}
+      - name: Build the catalog against the committed one
+        # The committed catalog/ is the baseline for the shrink, superset, corrupt-baseline and freshness guards.
+        # Any guard failure exits non-zero here, which fails the job, skips deploy and leaves the last good catalog live.
+        run: |
+          rc=0
+          python3 -I ofd2spoolman.py --out catalog || rc=$?
+          if [ "$rc" -eq 10 ]; then
+            echo "::warning title=Catalog published with warnings::ofd2spoolman.py exited 10 (see the log above, e.g. OFD looks stalled)"
+          elif [ "$rc" -ne 0 ]; then
+            echo "::error title=Catalog build refused::ofd2spoolman.py exited ${rc}; the last good catalog stays deployed"
+            exit "$rc"
+          fi
+      - name: Record provenance in state.json
+        run: |
+          converter=$(git log -1 --format=%H -- ofd2spoolman.py)
+          python3 -I catalog_provenance.py annotate --state catalog/state.json --converter-commit "$converter" --repo .
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Has the catalog changed?
+        id: settle
+        # Assign first: a failing settle must fail this step, not produce an empty result.
+        run: |
+          result=$(python3 -I catalog_provenance.py settle --dir catalog --repo .)
+          echo "result=${result}" >> "$GITHUB_OUTPUT"
+      - name: Commit catalog/ (only if changed)
+        id: commit
+        run: |
+          case "$SETTLE_RESULT" in
+            unchanged) echo "catalog unchanged; nothing to commit" ;;
+            changed)
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add --all -- catalog
+              # Only visible files directly in catalog/ may be committed: no other path, no renames from elsewhere,
+              # and no hidden leftovers such as .filaments.json.<random> from an interrupted publish.
+              outside=$(git diff --cached --name-only --no-renames | awk '!/^catalog\/[^.\/][^\/]*$/' | wc -l)
+              if [ "$outside" -ne 0 ]; then
+                echo "::error::refusing to commit: staged paths other than catalog/<file> would be included"
+                git diff --cached --name-only --no-renames
+                exit 1
+              fi
+              git commit -m "$(python3 -I catalog_provenance.py subject --state catalog/state.json)" -- catalog
+              auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+              push() { git -c "http.https://github.com/.extraheader=${auth}" push origin HEAD:main; }
+              push || { git pull --rebase origin main && push; }
+              ;;
+            *)
+              echo "::error::catalog_provenance settle returned an unexpected result"
+              exit 1
+              ;;
+          esac
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          SETTLE_RESULT: ${{ steps.settle.outputs.result }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+  deploy:
+    needs: build
+    # Deploy when the build succeeded or when this is an explicit rollback. A failed build skips this job, so the
+    # last good catalog stays live. !cancelled() lets the job run when build was skipped. Which commit is deployed
+    # is decided in the select step: deploy_ref, else CATALOG_PIN, else what the build just committed.
+    if: >-
+      github.ref == 'refs/heads/main' && !cancelled() &&
+      (inputs.deploy_ref != '' || needs.build.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select the commit to deploy
+        id: select
+        run: |
+          ref="${DEPLOY_REF:-${CATALOG_PIN:-$BUILT_SHA}}"
+          # Whole-string match; the raw value is deliberately not echoed back.
+          if ! [[ $ref =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+            echo "::error::the commit to deploy (deploy_ref, CATALOG_PIN or the built sha) is not a 7-40 digit hex commit hash"
+            exit 1
+          fi
+          full=$(git rev-parse --verify "${ref}^{commit}") || { echo "::error::the commit to deploy does not exist in this repository"; exit 1; }
+          git merge-base --is-ancestor "$full" origin/main || { echo "::error::the commit to deploy (${full}) is not on main"; exit 1; }
+          git checkout --detach "$full"
+          echo "sha=${full}" >> "$GITHUB_OUTPUT"
+          echo "Deploying catalog/ from ${full}" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DEPLOY_REF: ${{ inputs.deploy_ref }}
+          CATALOG_PIN: ${{ vars.CATALOG_PIN }}
+          BUILT_SHA: ${{ needs.build.outputs.sha }}
+      - name: Check that catalog/ is a servable, self-consistent set
+        # A consistency check only: the files and state.json come from the same commit, so agreement shows nothing was
+        # truncated or mismatched in that commit, not that the data is correct.
+        run: |
+          python3 -I - <<'PY'
+          import hashlib, json, pathlib
+          catalog = pathlib.Path("catalog")
+          outputs = json.loads((catalog / "state.json").read_text())["outputs"]
+          for name in ("filaments.json", "materials.json"):
+              raw = (catalog / name).read_bytes()
+              data = json.loads(raw)
+              assert isinstance(data, list) and data, f"catalog/{name} is not a non-empty array"
+              assert hashlib.sha256(raw).hexdigest() == outputs[name]["sha256"], f"catalog/{name} does not match state.json outputs"
+              assert len(data) == outputs[name]["count"], f"catalog/{name} count does not match state.json outputs"
+              print(f"catalog/{name}: {len(data)} records, sha256 matches state.json")
+          PY
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: catalog
+      - id: deployment
+        uses: actions/deploy-pages@v4

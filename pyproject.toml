@@ -19,8 +19,11 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.mypy]
 strict = true
-files = ["ofd2spoolman.py", "tools/conflict_report.py"]
+files = ["ofd2spoolman.py", "catalog_provenance.py", "tools/conflict_report.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.setuptools]
+py-modules = ["ofd2spoolman", "catalog_provenance"]
