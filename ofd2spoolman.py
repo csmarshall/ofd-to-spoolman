@@ -46,6 +46,7 @@ from typing import Any
 OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
 DEFAULT_OUT = Path("/opt/sw/spoolman/catalog")
+EXIT_CORRUPT_BASELINE = 7
 USER_AGENT = "ofd2spoolman (self-hosted Spoolman catalog builder)"
 
 # Enum values accepted by Spoolman's ExternalFilament model.
@@ -315,12 +316,33 @@ def _restore_after_partial_publish(
     log.error("publish of %s failed after %s was replaced; %s restored to its previous version", failed, renamed, renamed)
 
 
+class CorruptBaseline(Exception):
+    """The published filaments.json exists but cannot serve as a shrink-guard baseline."""
+
+
 def previous_count(out_dir: Path) -> int | None:
-    """Entry count of the currently published filaments.json, if any."""
+    """Entry count of the currently published filaments.json.
+
+    None only when no catalog was ever published (the file does not exist).
+    Raises CorruptBaseline when it exists but is unreadable, unparseable, not a
+    JSON list, or an empty list: publishing over it would bypass the shrink guard.
+    """
+    path = out_dir / "filaments.json"
     try:
-        return len(json.loads((out_dir / "filaments.json").read_text()))
-    except (OSError, ValueError):
+        raw = path.read_bytes()
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise CorruptBaseline(f"cannot read {path}: {exc}") from exc
+    try:
+        published = json.loads(raw.decode())  # UnicodeDecodeError is a ValueError
+    except (ValueError, RecursionError) as exc:
+        raise CorruptBaseline(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(published, list):
+        raise CorruptBaseline(f"{path} is not a JSON list")
+    if not published:
+        raise CorruptBaseline(f"{path} is an empty list")
+    return len(published)
 
 
 def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | None = None) -> int:
@@ -376,8 +398,15 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], bytes] | No
 
     # Guard against a broken upstream silently emptying the dropdown: refuse to
     # shrink below half of what is currently published.
-    prev = previous_count(args.out)
-    if prev and len(filaments) < prev // 2:
+    try:
+        prev = previous_count(args.out)
+    except CorruptBaseline as exc:
+        log.error(
+            "published catalog is unusable as a baseline, refusing to publish: %s; if it is really bad, delete it to allow a fresh publish",
+            exc,
+        )
+        return EXIT_CORRUPT_BASELINE
+    if prev is not None and len(filaments) < prev // 2:
         log.error("merged catalog has %d entries vs %d published; refusing to shrink by >50%%", len(filaments), prev)
         return 4
 

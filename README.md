@@ -58,7 +58,7 @@ ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
 LOG_LEVEL=DEBUG ofd2spoolman.py --dry-run
 ```
 
-It uses only the Python standard library (3.11+). Exit codes: 0 ok, 2 fetch/parse failure, 3 duplicate ids, 4 refused to shrink the catalog by more than 50%.
+It uses only the Python standard library (3.11+). Exit codes: 0 ok, 2 fetch/parse failure, 3 duplicate ids, 4 refused to shrink the catalog by more than 50%, 7 refused because the already-published `filaments.json` exists but is unreadable, invalid JSON, not a list, or an empty list (so the shrink guard has no trustworthy baseline). A missing file is a first run and publishes. To recover from 7, inspect or delete the bad `filaments.json` in the output directory and run again; `--dry-run` reports it too.
 
 ### Deploying alongside Spoolman (docker compose)
 
