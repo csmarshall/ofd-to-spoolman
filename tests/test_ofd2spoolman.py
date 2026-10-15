@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -128,8 +129,37 @@ class TestConvertOfd:
         entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
         refill = by_name(entries, "Zeta", "Flex Orange (refill)")
         assert refill["weight"] == 750.0
-        size_ids = {s["id"] for s in ofd["sizes"]}
-        assert all(e["id"].removeprefix("ofd_") in size_ids for e in entries)
+        size_uuids = {s["uuid"] for s in ofd["sizes"]}
+        assert all(e["id"].removeprefix("ofd_") in size_uuids for e in entries)
+
+    def test_id_is_built_from_uuid_never_from_derived_id(self, ofd: dict[str, Any]) -> None:
+        """Regression #28: size["id"] is a derived uuid5 that changes on a rename/GTIN edit; size["uuid"] is the stored canonical one."""
+        derived = {s["id"] for s in ofd["sizes"]}
+        assert derived.isdisjoint(s["uuid"] for s in ofd["sizes"])  # fixture must tell the two apart
+        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
+        ids = {e["id"] for e in entries}
+        assert ids
+        assert not {f"ofd_{d}" for d in derived} & ids
+        assert ids <= {f"ofd_{s['uuid']}" for s in ofd["sizes"]}
+
+    def test_id_follows_uuid_when_derived_id_changes(self, ofd: dict[str, Any]) -> None:
+        before = {e["id"] for e in ofd2spoolman.convert_ofd(copy.deepcopy(ofd), include_discontinued=True)}
+        for size in ofd["sizes"]:
+            size["id"] = "ffffffff-" + size["id"][9:]
+        after = {e["id"] for e in ofd2spoolman.convert_ofd(ofd, include_discontinued=True)}
+        assert before == after
+
+    def test_sizes_without_uuid_are_skipped_and_counted(self, ofd: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
+        baseline = len(ofd2spoolman.convert_ofd(copy.deepcopy(ofd), include_discontinued=False))
+        victim = next(s for s in ofd["sizes"] if s.get("variant_id") and "uuid" in s)
+        victim_id = victim["id"]
+        del victim["uuid"]
+        ofd["sizes"].append({**victim, "uuid": ""})
+        with caplog.at_level(logging.INFO):
+            entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
+        assert len(entries) <= baseline
+        assert all(victim_id not in e["id"] for e in entries)
+        assert "missing uuid" in caplog.text
 
     def test_incomplete_and_dangling_rows_skipped(self, ofd: dict[str, Any]) -> None:
         entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)

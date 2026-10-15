@@ -34,7 +34,7 @@ A fetch or parse failure also exits non-zero without touching the published file
 
 | Spoolman | From OFD | Notes |
 |---|---|---|
-| `id` | `ofd_<size.id>` | OFD's ids are stable UUIDs, so Spoolman's `external_id` links survive rebuilds |
+| `id` | `ofd_<size.uuid>` | OFD's stored canonical `uuid`, which does not change when a name, GTIN or row order is edited. The derived `size.id` is deliberately not used. Sizes without a `uuid` are skipped and counted. Spoolman has no alias concept, so a link to a `uuid` that OFD retires through `moved_from` does not follow it to the replacement |
 | `manufacturer` | `brand.name` | spelling unified with SpoolmanDB where they differ only in case or punctuation |
 | `name` | `filament.name` + `variant.name` | leading brand name removed; a bare material name ("PLA") removed; product lines such as `PETG+` kept |
 | `material` | `filament.material` | |

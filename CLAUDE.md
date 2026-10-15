@@ -9,7 +9,7 @@ Bridge from the Open Filament Database (OFD) into Spoolman's external filament c
 - **SpoolmanDB entries win on collision** and are passed through unchanged apart from brand-spelling unification.
 - **Never publish a worse catalog than the live one.** Fetch failures, duplicate ids and a >50% shrink all exit non-zero without touching the output. Keep the writes atomic (temp file + rename in the same dir).
 - **Standard library only** for `ofd2spoolman.py`; it runs from cron under `/usr/bin/python3 -I` with no venv. Dev tooling (pytest, ruff, mypy) lives in the `dev` extra.
-- Ids are `ofd_<OFD size uuid>`. Changing the id scheme orphans every Spoolman filament linked to an external id, so treat it as a breaking change.
+- Ids are `ofd_<size["uuid"]>`: OFD's stored canonical `uuid`, NOT `size["id"]` (a uuid5 derived from names, GTIN and row position, which changes on an edit). Sizes without a `uuid` are skipped and counted, never falling back to `id`. Spoolman has no alias concept, so links to a uuid that OFD retires via `moved_from` won't follow. Changing the id scheme orphans every Spoolman filament linked to an external id, so treat it as a breaking change.
 
 ## Workflow
 

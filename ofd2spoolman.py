@@ -170,6 +170,11 @@ def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[st
         if not (variant and fil and brand):
             skip("dangling reference")
             continue
+        # The canonical stored uuid, never the derived size["id"] (a uuid5 over names/GTIN/row position that changes on an edit). No fallback to it.
+        uuid = size.get("uuid")
+        if not uuid or not isinstance(uuid, str):
+            skip("missing uuid")
+            continue
         if not include_discontinued and (size.get("discontinued") or variant.get("discontinued") or fil.get("discontinued")):
             skip("discontinued")
             continue
@@ -185,7 +190,7 @@ def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[st
         finish = "matte" if "matte" in traits else None
         pattern = "marble" if "imitates_marble" in traits else "sparkle" if "glitter" in traits else None
         entry: dict[str, Any] = {
-            "id": f"ofd_{size['id']}",
+            "id": f"ofd_{uuid}",
             "manufacturer": brand["name"],
             "name": name,
             "material": fil["material"],
