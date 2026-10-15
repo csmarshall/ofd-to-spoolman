@@ -18,7 +18,7 @@ Published atomically into OUT_DIR, which a static web server (the `catalog`
 sidecar in docker-compose.yml) serves to Spoolman.
 
 Usage:
-    ofd2spoolman.py [--out DIR] [--dry-run] [--include-discontinued]
+    ofd2spoolman.py --out DIR [--dry-run] [--include-discontinued]
 Hidden (testing/CI): --from-ofd-file FILE --from-sdb-dir DIR build from local copies
 of the OFD all.json and SpoolmanDB filaments/materials.json instead of the network.
 Named so they don't share the --o prefix with --out (argparse abbreviations).
@@ -48,7 +48,6 @@ from typing import Any, NamedTuple
 
 OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
-DEFAULT_OUT = Path("/opt/sw/spoolman/catalog")
 USER_AGENT = "ofd2spoolman (self-hosted Spoolman catalog builder)"
 
 # Enum values accepted by Spoolman's ExternalFilament model.
@@ -661,7 +660,7 @@ def main(
     `argv` defaults to sys.argv[1:]; `fetcher` replaces the network download and `now` the clock (both used by tests).
     """
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help=f"output directory (default {DEFAULT_OUT})")
+    ap.add_argument("--out", type=Path, required=True, help="output directory the static web server serves")
     ap.add_argument("--dry-run", action="store_true", help="build and report, but write nothing")
     ap.add_argument("--include-discontinued", action="store_true", help="keep OFD products marked discontinued")
     # Hidden: read the sources from disk instead of the network (CI schema job).

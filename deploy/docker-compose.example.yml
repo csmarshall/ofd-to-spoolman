@@ -1,4 +1,13 @@
----
+# Example: Spoolman plus an nginx sidecar that serves the catalog built by
+# ofd2spoolman.py. Replace every value marked CHANGE.
+#
+# First run, in this order:
+#   1. mkdir -p /path/to/spoolman-data /path/to/catalog
+#   2. chown both to the user that runs the cron job / matches PUID:PGID below
+#      (Spoolman writes its data dir; ofd2spoolman.py writes the catalog dir).
+#   3. python3 -I ofd2spoolman.py --out /path/to/catalog   (so the catalog
+#      exists before Spoolman's first fetch of EXTERNAL_DB_URL)
+#   4. docker compose up -d
 services:
   spoolman:
     image: ghcr.io/donkie/spoolman:latest
@@ -6,23 +15,23 @@ services:
     environment:
       - PUID=1000
       - PGID=1000
-      - TZ=America/Chicago
+      - TZ=UTC                                   # CHANGE: your timezone
       - SPOOLMAN_PORT=8000
-      # Served at https://k.wozi.com/spoolman (kamek proxy, Authentik-gated) and
-      # http://192.168.1.10:7912/spoolman on the LAN (unauthenticated — Moonraker
-      # on the U1 talks to this directly; it cannot follow an SSO redirect).
-      - SPOOLMAN_BASE_PATH=/spoolman
-      - SPOOLMAN_ALLOWED_HOSTS=k.wozi.com,192.168.1.10,rosa,rosa.home.wozi.com,localhost
+      # By default the UI is at http://<host>:8000/. To serve it under a
+      # sub-path behind a reverse proxy, uncomment this; the UI and API then
+      # live under /spoolman/ (http://<host>:8000/spoolman/).
+      # - SPOOLMAN_BASE_PATH=/spoolman
+      # CHANGE: every hostname/IP clients use to reach Spoolman, comma-separated.
+      - SPOOLMAN_ALLOWED_HOSTS=spoolman.example.com,192.0.2.10,localhost
       # Filament catalog = SpoolmanDB + Open Filament Database, merged daily by
-      # ofd2spoolman.py (cron) into /opt/sw/spoolman/catalog, served by `catalog`.
+      # ofd2spoolman.py (run from cron) into the directory the `catalog`
+      # service serves. The hostname `catalog` resolves on the compose network.
       - EXTERNAL_DB_URL=http://catalog/
       - EXTERNAL_DB_NAME=SpoolmanDB + OFD
     volumes:
-      - /opt/sw/spoolman:/home/app/.local/share/spoolman
+      - /path/to/spoolman-data:/home/app/.local/share/spoolman   # CHANGE: persistent Spoolman data
     ports:
-      - 7912:8000
-    labels:
-      - "diun.enable=true"
+      - 8000:8000                                # CHANGE or remove if a reverse proxy fronts it
     depends_on:
       - catalog
     restart: unless-stopped
@@ -31,7 +40,6 @@ services:
     image: nginx:alpine
     container_name: spoolman-catalog
     volumes:
-      - /opt/sw/spoolman/catalog:/usr/share/nginx/html:ro
-    labels:
-      - "diun.enable=true"
+      # CHANGE: the directory you pass to `ofd2spoolman.py --out`.
+      - /path/to/catalog:/usr/share/nginx/html:ro
     restart: unless-stopped
