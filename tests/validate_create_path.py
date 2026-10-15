@@ -1,13 +1,17 @@
-"""Replay Spoolman's web UI "create filament from the external DB" mapping against the real create model. Runs INSIDE the ghcr.io/donkie/spoolman image.
+"""Replay Spoolman's web UI "create filament from the external DB" mapping against the real create model.
 
-ExternalFilamentsFile (validate_with_spoolman.py) only checks that the catalog parses. It accepts records the create endpoint then rejects:
-a name over 64 characters, a multi-colour record with no direction, a record carrying both color_hex and color_hexes. This script feeds every
-record through spoolman.api.v1.filament.FilamentParameters (what POST /filament validates), plus the limits that live on other models/columns.
+Runs INSIDE the ghcr.io/donkie/spoolman image.
 
-The UI mapping is read from the compiled client bundle (client/dist/assets/functions-*.js): spool_weight / extruder_temp / bed_temp use `||void 0`
-(0 or null is omitted), external_id is the record id, vendor_id comes from the vendor. Deliberate difference: the UI sends only color_hex when
-both colour fields are set and silently drops the others, which would hide ambiguous data, so here both are passed through and the model rejects it.
-What this cannot catch: a change in the client bundle's mapping (it is replicated by hand, not imported), or limits enforced only at the database.
+ExternalFilamentsFile (validate_with_spoolman.py) only checks that the catalog parses. It accepts records the create endpoint then
+rejects: a name over 64 characters, a multi-colour record with no direction, a record carrying both color_hex and color_hexes. This
+script feeds every record through spoolman.api.v1.filament.FilamentParameters (what POST /filament validates), plus the limits that
+live on other models and columns.
+
+The UI mapping is read from the compiled client bundle (client/dist/assets/functions-*.js): spool_weight / extruder_temp / bed_temp
+use `||void 0` (0 or null is omitted), external_id is the record id, vendor_id comes from the vendor. Deliberate difference: the UI
+sends only color_hex when both colour fields are set and silently drops the others, which would hide ambiguous data, so here both are
+passed through and the model rejects it. What this cannot catch: a change in the client bundle's mapping (it is replicated by hand,
+not imported), or limits enforced only at the database.
 
 Usage:
     PYTHONPATH=/home/app/spoolman /home/app/spoolman/.venv/bin/python validate_create_path.py CATALOG_DIR
