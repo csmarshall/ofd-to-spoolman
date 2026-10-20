@@ -1,8 +1,8 @@
 {
-  "run_at": "2026-10-19T05:43:05+00:00",
-  "ofd_version": "2026.10.19",
-  "ofd_generated_at": "2026-10-19T00:11:48Z",
-  "ofd_version_changed_at": "2026-10-19T05:43:05+00:00",
+  "run_at": "2026-10-20T05:42:21+00:00",
+  "ofd_version": "2026.10.20",
+  "ofd_generated_at": "2026-10-20T01:04:53Z",
+  "ofd_version_changed_at": "2026-10-20T05:42:21+00:00",
   "spoolmandb_hash": "d6daf05f58527441ed68e543b45cc435e80fe4ae7e268b89f335a29cd47bf05c",
   "spoolmandb_changed_at": "2026-10-15T20:41:26+00:00",
   "inputs": {
@@ -15,20 +15,20 @@
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
-      "last_modified": "Mon, 19 Oct 2026 00:12:32 GMT",
-      "sha256": "9b8838d0692ce93ed0f652a0bb24000de29033e57ed7ae0b1214bc2d1a470dc0"
+      "last_modified": "Tue, 20 Oct 2026 01:05:52 GMT",
+      "sha256": "c7b7721e7077944208b2a65f2707f483e22f703ce83ff2f5e0f1a180b25c1fda"
     }
   },
   "freshness_mismatches": [],
   "counts": {
     "spoolmandb_filaments": 8120,
     "spoolmandb_materials": 34,
-    "ofd_filaments": 23024
+    "ofd_filaments": 23025
   },
   "outputs": {
     "filaments.json": {
-      "count": 29534,
-      "sha256": "9476746387f7add2f90ed5c2ec7a33e7eae54ede69527a8c360610ec87d0c96e"
+      "count": 29535,
+      "sha256": "b204db3d34ef7b858688a0cd2361bf904952ca60a2543a90e081f528d50ab99a"
     },
     "materials.json": {
       "count": 97,
@@ -37,8 +37,8 @@
   },
   "sources": {
     "ofd": {
-      "tag": "dataset-v2026.10.19",
-      "commit": "31e97ac0ce50e142a3fb1a704d8a9cd631acc540"
+      "tag": "dataset-v2026.10.20",
+      "commit": "6ac4fcb039965590407d1a1497cfd88600eca9df"
     },
     "spoolmandb": {
       "commit": "8f1a99f9cda7a58ca3118d6bd28c707647caa3db"
