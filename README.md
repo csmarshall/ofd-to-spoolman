@@ -208,7 +208,7 @@ Then run it daily, after OFD's ~03:00 UTC rebuild:
 - Spoolman takes a single temperature; the OFD range is collapsed to its midpoint.
 - Multi-colour filaments come through as their single primary `color_hex`.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md). The reasoning behind the main design choices is recorded in [docs/adr/](docs/adr/README.md).
 
 ## License
 
