@@ -4,8 +4,10 @@ name: conflict-report
 # Nothing is ever filed upstream.
 #
 # Scheduled-workflow auto-disable: GitHub's docs say scheduled workflows are disabled after 60 days
-# without repository activity "in a public repository". This repo is private, so no keep-alive is
-# needed. If it is ever made public, add one (or re-enable by hand under Actions).
+# without repository activity "in a public repository". This repo is public now, so the rule applies.
+# The catalog workflow commits to main when the catalog content changes, which should count as
+# activity while OFD keeps changing; no separate keep-alive is added. If the schedule is ever
+# disabled, re-enable it by hand under Actions.
 #
 # Previous-run state: the workflow artifact `conflict-state` from the last successful run (artifacts
 # survive up to 90 days and are refreshed daily). If it is missing or expired the run is a baseline:
