@@ -1,34 +1,34 @@
 {
-  "run_at": "2026-11-09T05:36:01+00:00",
-  "ofd_version": "2026.11.09",
-  "ofd_generated_at": "2026-11-09T01:42:56Z",
-  "ofd_version_changed_at": "2026-11-09T05:36:01+00:00",
-  "spoolmandb_hash": "9e4e85a8ea7512fe343549cdffd135a33d19cb8bff7a053a7da6c7e07ceff305",
-  "spoolmandb_changed_at": "2026-11-09T05:36:01+00:00",
+  "run_at": "2026-11-10T05:35:56+00:00",
+  "ofd_version": "2026.11.10",
+  "ofd_generated_at": "2026-11-10T04:05:00Z",
+  "ofd_version_changed_at": "2026-11-10T05:35:56+00:00",
+  "spoolmandb_hash": "d79b309f0e12871e8e6ecf1d467c3f75b56be365fb6d5e8e49c74578f8a437f4",
+  "spoolmandb_changed_at": "2026-11-10T05:35:56+00:00",
   "inputs": {
     "spoolmandb_filaments": {
-      "last_modified": "Sun, 08 Nov 2026 18:44:53 GMT",
-      "sha256": "11f62f1e73ef61bd3c0acf4cc22727d63b68c4aace426f3a0efe1797a2dcf736"
+      "last_modified": "Mon, 09 Nov 2026 19:34:39 GMT",
+      "sha256": "9bd16e74f9099c3330243a248c420a06ca20a217aefdedb91c4e2ea957c8c4c5"
     },
     "spoolmandb_materials": {
-      "last_modified": "Sun, 08 Nov 2026 18:44:53 GMT",
+      "last_modified": "Mon, 09 Nov 2026 19:34:39 GMT",
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
-      "last_modified": "Mon, 09 Nov 2026 01:43:48 GMT",
-      "sha256": "85331ba8797297732a6875f465bffb494b4adc86dc3cdb2d712cb5ba62aa16c4"
+      "last_modified": "Tue, 10 Nov 2026 04:06:06 GMT",
+      "sha256": "539495b1b7f0181ae33372e6b856d0620ce763d9c391682357f40c073f3bd4e4"
     }
   },
   "freshness_mismatches": [],
   "counts": {
-    "spoolmandb_filaments": 9478,
+    "spoolmandb_filaments": 9534,
     "spoolmandb_materials": 34,
-    "ofd_filaments": 23630
+    "ofd_filaments": 23682
   },
   "outputs": {
     "filaments.json": {
-      "count": 31268,
-      "sha256": "e5c22a0e757bb48f9b36989bcb7f57975433072ba634096cbc2d3bc72aac3f72"
+      "count": 31369,
+      "sha256": "fddd129b55c8a932a2601c6fb45f67bb06f671eedd36afe48f5aaf19157f666d"
     },
     "materials.json": {
       "count": 104,
@@ -37,11 +37,11 @@
   },
   "sources": {
     "ofd": {
-      "tag": "dataset-v2026.11.09",
-      "commit": "0b52574e6d90d139326468f03b38728a96fc1465"
+      "tag": "dataset-v2026.11.10",
+      "commit": "58200d6d445e1df6b78005fbde32189e4e20909d"
     },
     "spoolmandb": {
-      "commit": "a44ad1a129129bfdad0cab6639a728353f68f64c"
+      "commit": "db7eb60a04ecd67abd26e0c8989389fd7b7a7ffc"
     }
   },
   "converter": {
