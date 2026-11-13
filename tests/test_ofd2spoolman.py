@@ -88,6 +88,23 @@ class TestMergeFilaments:
         assert {f["manufacturer"] for f in ofd2spoolman.merge_filaments(ofd, sdb)} == {"SUNLU"}
 
 
+class TestUnknownMaterials:
+    def test_comparison_uses_norm_like_the_rest(self) -> None:
+        filaments = [{"material": "pla"}, {"material": "TPU-95A"}, {"material": "PETG+"}]
+        materials = [{"material": "PLA"}, {"material": "PETG"}]
+        assert ofd2spoolman.materials_missing(filaments, materials) == ["PETG+", "TPU-95A"]  # PETG+ is not PETG; pla is PLA
+
+    def test_run_logs_the_gap_at_info_only(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sdb = json.loads(sources[SDB_F])
+        sdb[1]["material"] = "PETG-CF"
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, payloads=with_sdb(sources, filaments=sdb)) == 0
+        (record,) = [r for r in caplog.records if "missing from materials.json" in r.getMessage()]
+        assert record.levelno == logging.INFO and "PETG-CF" in record.getMessage()
+
+
 class TestValidateCatalog:
     @pytest.mark.parametrize(
         "data", [None, {}, [], "x", [1], [{"id": "a"}]], ids=["null", "object", "empty", "string", "non-object", "missing-keys"]

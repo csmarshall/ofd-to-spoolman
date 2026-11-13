@@ -189,6 +189,12 @@ def sdb_only_materials(ofd_materials: list[dict[str, Any]], sdb_materials: list[
     return [m for m in sdb_materials if norm(m["material"]) not in known]
 
 
+def materials_missing(filaments: list[dict[str, Any]], materials: list[dict[str, Any]]) -> list[str]:
+    """Sorted material names some filament uses that materials.json lacks (compared with norm(), so PETG+ is not PETG)."""
+    listed = {norm(m["material"]) for m in materials}
+    return sorted({f["material"] for f in filaments if norm(f["material"]) not in listed})
+
+
 def merge_materials(ofd_materials: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """OFD's materials as published, plus the SpoolmanDB materials OFD does not have."""
     extra = sdb_only_materials(ofd_materials, sdb_materials)
@@ -227,10 +233,9 @@ def publish(out_dir: Path, files: dict[str, Any]) -> dict[str, dict[str, Any]]:
     hard link to its previous inode taken just before the renames (best effort, logged either way).
     A file that was live is never deleted: if it cannot be restored, the new one stays and ERROR says so.
     Files are renamed in REVERSE of the given order: callers pass filaments first, so materials
-    land first. Spoolman resolves each filament's material by name, and new materials with the old
-    filaments only works for materials the old filaments still reference (merge_materials regenerates
-    the set), whereas new filaments pointing at materials the old materials.json lacks would fail.
-    So this order is the less bad one, not a guarantee.
+    land first. The merged materials.json is OFD's materials plus SpoolmanDB's that OFD lacks, and it
+    does not cover every material the filaments name (see materials_missing), so this order is a
+    convention, not a guarantee that a filament's material is always listed.
 
     Returns {name: {"count", "sha256"}} for the bytes written, for the state file's provenance record.
     """
@@ -726,7 +731,7 @@ def main(
         return EXIT_CATALOG_SHRANK
 
     materials = merge_materials(ofd_materials, sdb_materials)
-    unknown = sorted({f["material"] for f in filaments} - {m["material"] for m in materials})
+    unknown = materials_missing(filaments, materials)
     if unknown:
         log.info("filaments reference %d material(s) missing from materials.json: %s", len(unknown), unknown[:10])
     brands = len({f["manufacturer"] for f in filaments})
