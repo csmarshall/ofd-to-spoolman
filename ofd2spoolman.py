@@ -728,7 +728,7 @@ def main(
     materials = merge_materials(ofd_materials, sdb_materials)
     unknown = sorted({f["material"] for f in filaments} - {m["material"] for m in materials})
     if unknown:
-        log.warning("filaments reference %d material(s) missing from materials.json: %s", len(unknown), unknown[:10])
+        log.info("filaments reference %d material(s) missing from materials.json: %s", len(unknown), unknown[:10])
     brands = len({f["manufacturer"] for f in filaments})
     log.info("merged: %d filaments across %d manufacturers", len(filaments), brands)
 

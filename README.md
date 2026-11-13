@@ -2,9 +2,9 @@
 
 A bridge from the **[Open Filament Database](https://github.com/OpenFilamentCollective/open-filament-database) (OFD)** to **[Spoolman](https://github.com/Donkie/Spoolman)**'s external filament catalog.
 
-Spoolman's "add filament" dropdown is populated from an external catalog, [SpoolmanDB](https://github.com/Donkie/SpoolmanDB) by default. SpoolmanDB is carefully curated but small (67 brands as of 2026-10; no Snapmaker, Inland PLA only). OFD is much larger (176 brands, ~14,600 colour variants) but uses its own schema, so Spoolman can't read it directly. OFD's maintainers confirmed this in [OFD #353](https://github.com/OpenFilamentCollective/open-filament-database/issues/353) (2026-06): *"it's not possible just like that — we use different data formats."*
+Spoolman's "add filament" dropdown is populated from an external catalog, [SpoolmanDB](https://github.com/Donkie/SpoolmanDB) by default. SpoolmanDB is carefully curated but small (67 brands as of 2026-10; no Snapmaker, Inland PLA only). OFD is much larger (176 brands, ~14,600 colour variants) and its own schema is not Spoolman's, so Spoolman could not read it directly ([OFD #353](https://github.com/OpenFilamentCollective/open-filament-database/issues/353), 2026-06). Since OFD's Spoolman exporter was merged upstream (2026-11), OFD publishes a Spoolman-format catalog of its own (`spoolman/filaments.json` and `spoolman/materials.json`); Spoolman's `EXTERNAL_DB_URL` takes only one source, so this project merges that catalog with SpoolmanDB's.
 
-`ofd2spoolman.py` merges both into one catalog in SpoolmanDB's format. You serve it from any static web server and point Spoolman at it with `EXTERNAL_DB_URL`. Spoolman itself needs no changes.
+`ofd2spoolman.py` merges both into one catalog in SpoolmanDB's format. Where both have the same product, **OFD's record wins** ([ADR 0009](https://github.com/csmarshall/ofd-to-spoolman/blob/main/docs/adr/0009-ofd-catalog-wins-on-overlap.md), which supersedes the earlier "SpoolmanDB wins" rule). You serve it from any static web server and point Spoolman at it with `EXTERNAL_DB_URL`. Spoolman itself needs no changes.
 
 Human-directed and AI-assisted: built with Claude Code, and every change reviewed and steered by a human.
 
@@ -17,11 +17,10 @@ On the first deployment (2026-10-14), the merged catalog had 29,490 filaments ac
 ```mermaid
 flowchart TD
     SDB["SpoolmanDB<br/>filaments.json + materials.json"] --> FETCH
-    OFD["OFD daily export<br/>json/all.json.gz"] --> FETCH
-    FETCH["fetch both"] --> CONVERT["flatten OFD:<br/>one entry per size row"]
-    CONVERT --> CANON["unify brand spellings<br/>(SpoolmanDB spelling wins)"]
-    CANON --> DEDUPE["drop OFD entries SpoolmanDB already has"]
-    DEDUPE --> GUARD{"sane?<br/>unique ids, not &lt;50% of last publish"}
+    OFD["OFD published catalog<br/>spoolman/filaments.json, spoolman/materials.json,<br/>manifest.json"] --> FETCH
+    FETCH["fetch all five"] --> CANON["unify brand spellings<br/>(first seen wins, OFD first)"]
+    CANON --> DEDUPE["keep OFD as published;<br/>drop SpoolmanDB entries OFD already has"]
+    DEDUPE --> GUARD{"sane?<br/>unique ids, not &lt;50% of last publish,<br/>SpoolmanDB not covered by OFD kept"}
     GUARD -- no --> KEEP["exit non-zero,<br/>last good catalog stays live"]
     GUARD -- yes --> PUBLISH["atomic write:<br/>filaments.json + materials.json"]
     PUBLISH --> SERVE["static web server"]
@@ -32,39 +31,23 @@ A fetch or parse failure also exits non-zero without touching the published file
 
 Both output files are written one compact record per line (still a valid JSON array) and `filaments.json` is sorted by id, so the bytes are deterministic and diffs are readable. Spoolman parses it like any other JSON.
 
-### Field mapping (OFD → Spoolman `ExternalFilament`)
+### What is merged
 
-| Spoolman | From OFD | Notes |
-|---|---|---|
-| `id` | `ofd_<size.uuid>` | OFD's stored canonical `uuid`, which does not change when a name, GTIN or row order is edited. The derived `size.id` is deliberately not used. Sizes without a `uuid` are skipped and counted. Spoolman has no alias concept, so a link to a `uuid` that OFD retires through `moved_from` does not follow it to the replacement |
-| `manufacturer` | `brand.name` | spelling unified with SpoolmanDB where they differ only in case or punctuation |
-| `name` | `filament.name` + `variant.name` | leading brand name removed; a bare material name ("PLA") removed; product lines such as `PETG+` kept |
-| `material` | `filament.material` | |
-| `density` | `filament.density` | required; rows without it are skipped |
-| `weight` / `diameter` | `size.filament_weight` / `size.diameter` | |
-| `spool_weight` | `size.empty_spool_weight` | present on ~15% of OFD sizes; null otherwise |
-| `color_hex` | `variant.color_hex` | lowercased, `#` stripped, discarded if malformed |
-| `extruder_temp` / `bed_temp` | midpoint of OFD min/max | a 0 bound ("unheated OK") is ignored rather than averaged in |
-| `finish` | trait `matte` | Spoolman only knows matte/glossy |
-| `pattern` | traits `imitates_marble` → marble, `glitter` → sparkle | |
-| `translucent` / `glow` | traits `translucent`/`transparent`, `glow` | |
-
-Discontinued products are skipped unless you pass `--include-discontinued`. Refill sizes get `(refill)` added to the name.
-
-Spoolman rejects filament names over 64 characters (`FilamentParameters.name` `max_length=64`, ORM `String(64)`), so over-long OFD-derived names are shortened deterministically: a trailing parenthetical such as `(Black & Red & Gold)` is dropped if the remainder fits and does not collide with another record of the same manufacturer, material, weight and diameter; otherwise the middle is elided to `start… end` on word boundaries, keeping the trailing colour. If two shortened names would still collide, the cut is shifted, and as a last resort a short digest of the original is appended. Every case is logged at INFO. SpoolmanDB names are never altered; one over 64 characters is logged as a warning. A trailing `(refill)` marker is never dropped as a parenthetical.
-
-Shortened names are recomputed every run with no persisted state, so when a collision partner appears or disappears a shortened name can change between runs. Spoolman copies the name at create time and links hang on the id, so only the dropdown labels change. A duplicated `uuid` in OFD data blocks the publish with `EXIT_DUPLICATE_IDS` (fail-safe; none exist today).
-
-SpoolmanDB entries are passed through unchanged apart from brand spelling. When the same product (manufacturer, material, name, weight, diameter) is in both, the SpoolmanDB entry is kept, because SpoolmanDB has the stricter data policy: measured spool weights and no generated values.
+- **OFD filaments and materials are taken as OFD publishes them**: ids (`ofd_<size uuid>`), names, colours, temperatures and densities are OFD's exporter's output, including which products it keeps (discontinued ones are in). This project no longer has its own OFD-to-Spoolman mapping; it was retired in favour of OFD's so the two cannot drift. The one change made to an OFD record is brand spelling (below).
+- **SpoolmanDB filaments are kept unless OFD has the same product**: the identity is (manufacturer, material, name, weight, diameter) after `norm()` (lowercase alphanumerics plus `+`, so `PETG+` is not `PETG`). When both have it, the OFD record is published and the SpoolmanDB one is dropped. Every other SpoolmanDB filament is passed through unchanged apart from brand spelling.
+- **Materials**: OFD's `materials.json` as published, plus the SpoolmanDB materials whose name OFD's file does not list.
+- **Brand spelling** is unified across the two sources (`SUNLU` vs `Sunlu`): the first spelling seen wins, and OFD is seen first.
+- **Consequence for existing links:** a Spoolman filament created from a SpoolmanDB id that OFD also covers loses its catalog entry, because that id is no longer in the catalog. The filament and its spools keep working; only the link to the catalog entry dangles. Spoolman has no alias mechanism for ids.
+- Names over Spoolman's 64-character limit (`FilamentParameters.name` `max_length=64`) are **not** altered from either source; they are logged as a warning. OFD's exporter owns OFD's names.
 
 ## Usage
 
 ```
-ofd2spoolman.py --out DIR [--dry-run] [--include-discontinued]
+ofd2spoolman.py --out DIR [--dry-run]
 LOG_LEVEL=DEBUG ofd2spoolman.py --out DIR --dry-run
 ```
 
-It uses only the Python standard library (3.11+).
+It uses only the Python standard library (3.11+). `--include-discontinued` is still accepted but ignored (OFD's published catalog already includes discontinued products), so an existing cron line keeps working.
 
 ### Exit codes
 
@@ -74,7 +57,7 @@ It uses only the Python standard library (3.11+).
 | 2 | fetch/parse failure | no |
 | 3 | duplicate ids | no |
 | 4 | whole catalog would shrink by more than 50% vs the live one | no |
-| 5 | SpoolmanDB superset guard failed: a SpoolmanDB filament id or material is missing or changed in the output | no |
+| 5 | SpoolmanDB coverage guard failed: a SpoolmanDB filament OFD does not cover is missing or changed, a covered one has no OFD record with the same key in the output, or a SpoolmanDB material OFD does not list is missing or changed | no |
 | 6 | a single source (SpoolmanDB or OFD) shrank by more than 50% vs its last good fetch | no |
 | 7 | the already-published `filaments.json` exists but is unreadable, invalid JSON, not a list, or an empty list, so the shrink guard has no trustworthy baseline; a missing file is a first run and publishes. Recover by inspecting or deleting the bad file (`--dry-run` reports it too) | no |
 | 10 | published, but with warnings (currently: OFD looks stalled) | yes |
@@ -83,10 +66,10 @@ Any other, unexpected exception (for example `write_state` failing after the cat
 
 ### Drift checks
 
-- **Superset guard (5).** Spoolman's `EXTERNAL_DB_URL` replaces its default SpoolmanDB, so a SpoolmanDB entry we lose is gone from the dropdown. Every SpoolmanDB filament id must be in the output with identical fields (manufacturer compared after `norm()`, because brand spelling is deliberately unified across sources), and every SpoolmanDB material must be present unchanged. The comparison uses a deep copy taken before the brand rewrite.
-- **Per-source shrink guard (6).** The SpoolmanDB filament count and the OFD converted-filament count are each compared with the counts recorded at the last successful publish. They may keep at least `MIN_RETAINED_FRACTION` (50%) of that: the same constant as the whole-catalog guard. Normal churn (OFD pruning discontinued items) is a few percent, a broken or empty export loses nearly everything, so anything between separates them. With no state file there is no baseline and the guard stays quiet.
-- **OFD stalled (warning, exit 10).** OFD rebuilds daily. If the dataset's own `generated_at` is more than `OFD_STALE_AFTER` (3 days) old, a WARNING is logged and the run exits 10 after publishing. The warning gives the age in hours; an unparseable `generated_at` logs its own WARNING. A `generated_at` in the future never fires (clock skew is not a stall). If `generated_at` is ever absent, the fallback (needs a non-empty `version`) is how long ago this tool first saw the current `version`.
-- **Input freshness (warning only, exit code unchanged).** For each fetched input (the OFD `all.json.gz`, and SpoolmanDB `filaments.json` and `materials.json`) the HTTP `Last-Modified` header and the sha256 of the fetched (gunzipped) bytes are recorded in `state.json` and compared with the previous successful run. Both moved: normal update (INFO). Neither moved: unchanged (INFO). Exactly one moved (the header changed over identical content, or the content changed under the same header): a WARNING with the stable tag `FRESHNESS-MISMATCH source=<ofd|spoolmandb_filaments|spoolmandb_materials> moved=<last_modified|sha256> ...`, also recorded under `freshness_mismatches` in `state.json`. The one exception is SpoolmanDB (`DEPLOY_STAMPED_SOURCES` in the code): GitHub Pages stamps every file with the deploy time, so `materials.json` gets a new `Last-Modified` over identical bytes whenever `filaments.json` changes. For those two inputs a Last-Modified-only move is INFO (`status=redeployed`); changed content under an unchanged `Last-Modified` still warns. OFD warns on both one-sided cases. It never blocks publishing and never changes the exit code; routing it to an alert is later work (#24). First run, no previous record, or a missing `Last-Modified` on either side (always the case with `--from-ofd-file/--from-sdb-dir`) is INFO only, because there is nothing to compare. Grep the log for `FRESHNESS-MISMATCH`.
+- **Coverage guard (5).** Spoolman's `EXTERNAL_DB_URL` replaces its default SpoolmanDB, so a SpoolmanDB entry we lose is gone from the dropdown, except what OFD deliberately replaces (ADR 0009). Every SpoolmanDB filament that OFD does not cover (no OFD record with the same dedupe key) must be in the output with identical fields (manufacturer compared after `norm()`, because brand spelling is deliberately unified across sources); every one OFD does cover must be accounted for by an OFD record with the same key in the output; and every SpoolmanDB material OFD's materials file does not list must be present unchanged. The comparison uses a deep copy taken before the brand rewrite. It no longer protects "nothing SpoolmanDB offered ever disappears", only "nothing OFD does not replace disappears".
+- **Per-source shrink guard (6).** The SpoolmanDB filament count and the OFD published-filament count are each compared with the counts recorded at the last successful publish. They may keep at least `MIN_RETAINED_FRACTION` (50%) of that: the same constant as the whole-catalog guard. Normal churn (OFD pruning discontinued items) is a few percent, a broken or empty export loses nearly everything, so anything between separates them. With no state file there is no baseline and the guard stays quiet.
+- **OFD stalled (warning, exit 10).** OFD rebuilds daily. If the manifest's own `generated_at` is more than `OFD_STALE_AFTER` (3 days) old, a WARNING is logged and the run exits 10 after publishing. The warning gives the age in hours; an unparseable `generated_at` logs its own WARNING. A `generated_at` in the future never fires (clock skew is not a stall). If `generated_at` is ever absent, the fallback (needs a non-empty `dataset_version`) is how long ago this tool first saw the current `dataset_version`.
+- **Input freshness (warning only, exit code unchanged).** For each fetched input (OFD's `manifest.json`, `spoolman/filaments.json` and `spoolman/materials.json`, and SpoolmanDB's `filaments.json` and `materials.json`) the HTTP `Last-Modified` header and the sha256 of the fetched (gunzipped) bytes are recorded in `state.json` and compared with the previous successful run. Both moved: normal update (INFO). Neither moved: unchanged (INFO). Exactly one moved (the header changed over identical content, or the content changed under the same header): a WARNING with the stable tag `FRESHNESS-MISMATCH source=<ofd_manifest|ofd_filaments|ofd_materials|spoolmandb_filaments|spoolmandb_materials> moved=<last_modified|sha256> ...`, also recorded under `freshness_mismatches` in `state.json`. The exception is the inputs in `DEPLOY_STAMPED_SOURCES` in the code: SpoolmanDB (GitHub Pages stamps every file with the deploy time, so `materials.json` gets a new `Last-Modified` over identical bytes whenever `filaments.json` changes) and OFD's two catalog files (their `Last-Modified` is the build's deploy time, a second after the manifest's; that is inferred from the timestamps, not documented by OFD). For those four inputs a Last-Modified-only move is INFO (`status=redeployed`); changed content under an unchanged `Last-Modified` still warns. The OFD manifest changes on every build and warns on both one-sided cases. It never blocks publishing and never changes the exit code; routing it to an alert is later work (#24). First run, no previous record, or a missing `Last-Modified` on either side (always the case with `--from-ofd-dir/--from-sdb-dir`) is INFO only, because there is nothing to compare. Grep the log for `FRESHNESS-MISMATCH`.
 - **SpoolmanDB content hash.** `spoolmandb_hash` / `spoolmandb_changed_at` record a hash of the parsed SpoolmanDB data (re-serialised with sorted keys and compact separators, so it ignores key order and whitespace) and when this tool first saw it, for context only. It is a different hash from `inputs.spoolmandb_*.sha256`, which is taken over the fetched bytes.
 - **Resetting exit 6.** The per-source baseline only moves on a successful publish, so after a legitimate large drop exit 6 repeats on every run until you accept the new size: delete `OUT_DIR/state.json` (the next run has no baseline and publishes, then records fresh counts). A corrupt or old-schema `state.json` is handled the same way: the unusable parts are ignored with a WARNING, never a crash.
 
@@ -105,12 +88,14 @@ Illustrative values:
   "spoolmandb_hash": "<sha256 of the parsed, sorted-key SpoolmanDB filaments+materials; context only>",
   "spoolmandb_changed_at": "2026-10-13T04:01:57+00:00",
   "inputs": {
-    "ofd": {"last_modified": "Tue, 13 Oct 2026 03:02:10 GMT", "sha256": "<sha256 of the gunzipped all.json>"},
+    "ofd_manifest": {"last_modified": "Tue, 13 Oct 2026 03:02:10 GMT", "sha256": "<sha256 of the fetched bytes>"},
+    "ofd_filaments": {"last_modified": "Tue, 13 Oct 2026 03:02:12 GMT", "sha256": "<sha256 of the fetched bytes>"},
+    "ofd_materials": {"last_modified": "Tue, 13 Oct 2026 03:02:12 GMT", "sha256": "<sha256 of the fetched bytes>"},
     "spoolmandb_filaments": {"last_modified": "Mon, 12 Oct 2026 18:20:41 GMT", "sha256": "<sha256 of the fetched bytes>"},
     "spoolmandb_materials": {"last_modified": "Mon, 12 Oct 2026 18:20:41 GMT", "sha256": "<sha256 of the fetched bytes>"}
   },
   "freshness_mismatches": [],
-  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 22980},
+  "counts": {"spoolmandb_filaments": 8120, "spoolmandb_materials": 30, "ofd_filaments": 24666},
   "outputs": {
     "filaments.json": {"count": 29490, "sha256": "<sha256 of the published file>"},
     "materials.json": {"count": 97, "sha256": "<sha256 of the published file>"}
@@ -123,7 +108,7 @@ Illustrative values:
 }
 ```
 
-`ofd_filaments` counts the OFD rows *converted* (22,980 on the live dataset), not the entries added after deduping against SpoolmanDB; it depends on `--include-discontinued`, so switching that flag changes the baseline and can trip exit 6 (or mask a real drop) once; delete `state.json` when changing it. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". The `version` and `generated_at` fields are the ones OFD's `all.json` actually has. `last_modified` is `null` when the server sent none. `outputs` is written by `ofd2spoolman.py` (count and sha256 of the exact bytes published). `sources` and `converter` are not: they need GitHub API lookups, so `catalog_provenance.py annotate` adds them in the hosted-catalog workflow (a standalone cron run does not have them). This one file is the hosted catalog's provenance record, there is deliberately no separate manifest to drift out of sync with it.
+`ofd_filaments` counts the filaments in OFD's published `spoolman/filaments.json` (24,666 on 2026-11-13), not the entries added after deduping against SpoolmanDB. Before ADR 0009 it counted rows converted from `all.json` without discontinued products (22,980), so the first run after the switch compares a larger number against the old baseline, which cannot trip the shrink guard. `ofd_version` and `ofd_generated_at` now come from `manifest.json` (`dataset_version`, `generated_at`); the key names and the version format are unchanged, and the `inputs.ofd` entry of an older state file is simply ignored. `*_changed_at` only moves when the version or hash changes; since this is a once-a-day one-shot, it means "first seen by this tool", not "changed upstream at". `last_modified` is `null` when the server sent none. `outputs` is written by `ofd2spoolman.py` (count and sha256 of the exact bytes published). `sources` and `converter` are not: they need GitHub API lookups, so `catalog_provenance.py annotate` adds them in the hosted-catalog workflow (a standalone cron run does not have them). This one file is the hosted catalog's provenance record, there is deliberately no separate manifest to drift out of sync with it.
 
 ## Hosted catalog (GitHub Pages)
 
@@ -203,10 +188,10 @@ Then run it daily, after OFD's ~03:00 UTC rebuild:
 
 ## Limitations
 
-- **Data quality is OFD's.** Unlike SpoolmanDB, OFD doesn't require measured spool weights, and some hex codes are placeholders (e.g. "Clear" as `#ffffff`). Weigh your own empty spools.
+- **Data quality is OFD's, and OFD wins on overlap.** Unlike SpoolmanDB, OFD doesn't require measured spool weights, and some hex codes are placeholders (e.g. "Clear" as `#ffffff`). Weigh your own empty spools. Where both catalogs have a product, SpoolmanDB's measured values are not published.
 - Duplicate detection between the two sources is exact-name based after normalisation. Products named differently in the two catalogs ("PolyTerra Black" vs "PolyTerra™ Charcoal Black") will appear twice.
-- Spoolman takes a single temperature; the OFD range is collapsed to its midpoint.
-- Multi-colour filaments come through as their single primary `color_hex`.
+- Mapping decisions (temperature, names, colours, multi-colour handling, discontinued products) are OFD's exporter's, not this project's.
+- The converter depends on OFD's catalog being up and well-formed; an empty or malformed file is a fetch failure (exit 2).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -217,3 +202,5 @@ MIT. OFD data is MIT and SpoolmanDB data is MIT; see their repositories.
 ## Conflict report
 
 `.github/workflows/conflict-report.yml` runs daily (and on demand) and maintains one issue, "SpoolmanDB vs OFD conflicts", listing products present in both catalogs whose density, extruder/bed temperature, spool weight or colour hex disagree beyond a small tolerance (constants at the top of `tools/conflict_report.py`), plus `size` conflicts where the two sides list different weight/diameter for the same manufacturer + material + name. Conflicts new since the previous run are posted as a comment; the previous set is kept as the `conflict-state` workflow artifact. It only reports inside this repo and never files anything upstream. Try it locally without touching GitHub: `python3 tools/conflict_report.py --dry-run`.
+
+The conflict report still reads OFD's `json/all.json.gz` through the pre-ADR-0009 mapping, now in `tools/legacy_ofd_convert.py`, so what it compares is no longer what the catalog publishes. It needs porting to OFD's published catalog (follow-up).
