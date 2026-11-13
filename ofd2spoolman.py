@@ -146,17 +146,29 @@ def dedupe_key(f: dict[str, Any]) -> tuple[str, str, str, float, float]:
     return (norm(f["manufacturer"]), norm(f["material"]), norm(f["name"]), float(f["weight"]), float(f["diameter"]))
 
 
+NUMERIC_FIELDS = frozenset({"weight", "diameter"})
+
+
 def validate_catalog(name: str, data: Any, required: Sequence[str]) -> list[dict[str, Any]]:
-    """The parsed OFD catalog file as a non-empty list of dicts that carry the `required` keys, else ValueError.
+    """The parsed OFD catalog file as a non-empty list of dicts whose `required` keys are present and well typed, else ValueError.
 
     OFD's records are published as they are, so this is the only place a malformed upstream is caught before the
-    merge indexes into them; the caller treats the ValueError as a failed fetch.
+    merge and dedupe_key index into them. Fields in NUMERIC_FIELDS must be int or float (not bool), the rest str.
+    The message names the file, index and field; the caller treats the ValueError as a failed fetch.
     """
     if not isinstance(data, list) or not data:
         raise ValueError(f"OFD {name} is not a non-empty JSON list")
     for index, record in enumerate(data):
-        if not isinstance(record, dict) or any(key not in record for key in required):
-            raise ValueError(f"OFD {name}[{index}] is not an object with {list(required)}")
+        if not isinstance(record, dict):
+            raise ValueError(f"OFD {name}[{index}] is not an object")
+        for key in required:
+            if key not in record:
+                raise ValueError(f"OFD {name}[{index}].{key} is missing")
+            value = record[key]
+            numeric = isinstance(value, int | float) and not isinstance(value, bool)
+            if (key in NUMERIC_FIELDS and not numeric) or (key not in NUMERIC_FIELDS and not isinstance(value, str)):
+                kind = "a number" if key in NUMERIC_FIELDS else "a string"
+                raise ValueError(f"OFD {name}[{index}].{key} must be {kind}, got {value!r}")
     return data
 
 

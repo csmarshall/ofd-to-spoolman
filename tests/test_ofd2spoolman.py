@@ -105,6 +105,31 @@ class TestUnknownMaterials:
         assert record.levelno == logging.INFO and "PETG-CF" in record.getMessage()
 
 
+class TestValidateCatalogTypes:
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [("weight", None), ("name", None), ("weight", True), ("diameter", "1.75"), ("id", 5), ("manufacturer", ["x"]), ("material", None)],
+    )
+    def test_bad_field_type_exits_2_with_a_clear_log_line(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture, field: str, bad: Any
+    ) -> None:
+        ofd = json.loads(sources[ofd2spoolman.OFD_FILAMENTS_URL])
+        ofd[2][field] = bad
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_FILAMENTS_URL: json.dumps(ofd).encode()}) == 2
+        assert f"filaments.json[2].{field}" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert not (tmp_path / "out").exists()
+
+    def test_bad_material_name_type_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        mats = json.loads(sources[ofd2spoolman.OFD_MATERIALS_URL])
+        mats[0]["material"] = None
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_MATERIALS_URL: json.dumps(mats).encode()}) == 2
+
+    def test_ints_are_numeric(self) -> None:
+        record = {"id": "a", "manufacturer": "M", "name": "N", "material": "PLA", "weight": 1000, "diameter": 2}
+        assert ofd2spoolman.validate_catalog("filaments.json", [record], ofd2spoolman.FILAMENT_KEYS) == [record]
+
+
 class TestValidateCatalog:
     @pytest.mark.parametrize(
         "data", [None, {}, [], "x", [1], [{"id": "a"}]], ids=["null", "object", "empty", "string", "non-object", "missing-keys"]
