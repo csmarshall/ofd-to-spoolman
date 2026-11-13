@@ -77,7 +77,7 @@
 {"material":"PETG-GF","density":1.27,"extruder_temp":null,"bed_temp":70},
 {"material":"PHA","density":1.24,"extruder_temp":208,"bed_temp":55},
 {"material":"PLA+WOOD","density":1.21,"extruder_temp":215,"bed_temp":40},
-{"material":"PLA-CF","density":1.24,"extruder_temp":240,"bed_temp":45},
+{"material":"PLA-CF","density":1.24,"extruder_temp":222,"bed_temp":55},
 {"material":"PLAX","density":1.19,"extruder_temp":225,"bed_temp":65},
 {"material":"POM","density":1.24,"extruder_temp":215,"bed_temp":115},
 {"material":"PP","density":0.92,"extruder_temp":230,"bed_temp":90},
