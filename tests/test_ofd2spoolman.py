@@ -738,6 +738,14 @@ class TestSpoolmanDbSuperset:
     def test_uncovered_entry_is_still_held_to_unchanged(self) -> None:
         assert check(self.sdb, self.mats, [], self.mats, ofd=[dict(self.ofd_same_key[0], name="Different")])
 
+    def test_ofd_record_contents_never_matter_beyond_key_and_id(self) -> None:
+        """OFD wins on overlap, so its fields (and unrelated OFD records) must not be held against SpoolmanDB's."""
+        ofd = [
+            dict(self.ofd_same_key[0], density=9.9, extruder_temp=1, color_hex="zzz", spool_weight=None),
+            {"id": "ofd_unrelated", "manufacturer": "Other", "name": "Y", "material": "ABS", "weight": 750.0, "diameter": 2.85},
+        ]
+        assert check(self.sdb, self.mats, ofd, self.mats, ofd=ofd) == []
+
     def test_material_ofd_lists_may_differ_or_be_absent(self) -> None:
         ofd_mats = [{"material": "pla", "density": 1.25}]
         assert check(self.sdb, self.mats, self.sdb, ofd_mats, ofd_mats=ofd_mats) == []
@@ -968,6 +976,36 @@ class TestSupersetEdges:
         monkeypatch.setattr(ofd2spoolman, "merge_filaments", corrupting)
         assert run(tmp_path / "out") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
         assert not (tmp_path / "out").exists()
+
+
+class TestPreviousVersionState:
+    def test_state_from_the_all_json_era_is_ignored_where_obsolete_and_the_run_publishes(
+        self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Layout written before ADR 0009: inputs.ofd, converted-row count, all.json-era version."""
+        write_state(
+            tmp_path,
+            run_at="2026-11-11T04:00:00+00:00",
+            ofd_version="2026.11.11",
+            ofd_generated_at="2026-11-11T03:00:00Z",
+            ofd_version_changed_at="2026-11-11T04:00:00+00:00",
+            inputs={
+                "ofd": {"last_modified": "Wed, 11 Nov 2026 03:00:00 GMT", "sha256": "ab" * 32},
+                "spoolmandb_filaments": {"last_modified": LM_SDB_F, "sha256": "cd" * 32},
+            },
+            counts={
+                "spoolmandb_filaments": 2,
+                "ofd_filaments": 12,
+            },  # live was 22,980; scaled to the tiny fixture (the old count is a converted-row count)
+        )
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, last_modified=LAST_MODIFIED, now=FIXTURE_NOW) == 0
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert set(state["inputs"]) == {"ofd_manifest", "ofd_filaments", "ofd_materials", "spoolmandb_filaments", "spoolmandb_materials"}
+        assert state["ofd_version"] == "2026.10.13"
+        assert state["counts"]["ofd_filaments"] == 9
+        first = {r.getMessage().split()[1] for r in freshness_lines(caplog) if "status=first" in r.getMessage()}
+        assert first == {"source=ofd_manifest", "source=ofd_filaments", "source=ofd_materials", "source=spoolmandb_materials"}
 
 
 class TestStateEdges:
