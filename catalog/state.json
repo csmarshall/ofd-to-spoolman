@@ -1,17 +1,17 @@
 {
-  "run_at": "2026-11-14T05:35:41+00:00",
+  "run_at": "2026-11-16T05:36:42+00:00",
   "ofd_version": "2026.11.14",
   "ofd_generated_at": "2026-11-14T02:22:51Z",
   "ofd_version_changed_at": "2026-11-14T05:35:41+00:00",
-  "spoolmandb_hash": "3c227880d01a523de09220ad3433350e0d0a3e139f04cad7732dcca7bc1b42f2",
-  "spoolmandb_changed_at": "2026-11-13T05:35:58+00:00",
+  "spoolmandb_hash": "6327b6e17bdcf3a57da25e0fd441b341a1864c9520fe252be72f61ccf6c1064b",
+  "spoolmandb_changed_at": "2026-11-16T05:36:42+00:00",
   "inputs": {
     "spoolmandb_filaments": {
-      "last_modified": "Thu, 12 Nov 2026 10:28:11 GMT",
-      "sha256": "94f92723abb1a676951fec71606595a2bfb6cb1d3a30f20442ff931bb8a066f6"
+      "last_modified": "Sun, 15 Nov 2026 19:03:29 GMT",
+      "sha256": "379bda12092d47b8edb869f0a1ac085a03c2624f5b5178e4efb1c45d1574d085"
     },
     "spoolmandb_materials": {
-      "last_modified": "Thu, 12 Nov 2026 10:28:11 GMT",
+      "last_modified": "Sun, 15 Nov 2026 19:03:29 GMT",
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
@@ -27,12 +27,12 @@
   },
   "outputs": {
     "filaments.json": {
-      "count": 32213,
-      "sha256": "911239478d3dd0c0ec56713eeba8e0972f4a957e7856dfe107fcc41801aafdbb"
+      "count": 32268,
+      "sha256": "862f5b771d252ced62d75236ff1ef79fe3e3cab369314dc16937b0ba4188245b"
     },
     "materials.json": {
-      "count": 104,
-      "sha256": "a101ce8713557576e6d0d15e6f48af9c0c41777ce0e8b04eab14f0cf026f0202"
+      "count": 105,
+      "sha256": "cb79f91a51c0041ee26d84e3574d745b58b97facb4af02a2e360a5eb3cefdca2"
     }
   },
   "sources": {
@@ -41,7 +41,7 @@
       "commit": "5479c08da87dbe58684141bda464e90b3cf965c0"
     },
     "spoolmandb": {
-      "commit": "33c39392e3990f2689bc8bf939bf79a35863e49e"
+      "commit": "bbdc012ba9270d545f2be0f3e66603640d60d800"
     }
   },
   "converter": {
