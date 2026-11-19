@@ -1,38 +1,51 @@
 {
-  "run_at": "2026-11-18T05:36:10+00:00",
+  "run_at": "2026-11-19T05:35:59+00:00",
   "ofd_version": "2026.11.18",
   "ofd_generated_at": "2026-11-18T03:41:30Z",
   "ofd_version_changed_at": "2026-11-18T05:36:10+00:00",
-  "spoolmandb_hash": "6327b6e17bdcf3a57da25e0fd441b341a1864c9520fe252be72f61ccf6c1064b",
-  "spoolmandb_changed_at": "2026-11-16T05:36:42+00:00",
+  "spoolmandb_hash": "0d32511d656f18a8f2d5513da4de37f359f16db2f20991a671083381c08f5d66",
+  "spoolmandb_changed_at": "2026-11-19T05:35:59+00:00",
   "inputs": {
     "spoolmandb_filaments": {
-      "last_modified": "Sun, 15 Nov 2026 19:03:29 GMT",
-      "sha256": "379bda12092d47b8edb869f0a1ac085a03c2624f5b5178e4efb1c45d1574d085"
+      "last_modified": "Wed, 18 Nov 2026 16:06:42 GMT",
+      "sha256": "5f34894187ab18c77b9a591c2f449fcee555cebb11956668aed7c5f63fc7461f"
     },
     "spoolmandb_materials": {
-      "last_modified": "Sun, 15 Nov 2026 19:03:29 GMT",
+      "last_modified": "Wed, 18 Nov 2026 16:06:42 GMT",
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
-      "last_modified": "Wed, 18 Nov 2026 03:42:11 GMT",
+      "last_modified": "Wed, 18 Nov 2026 03:42:12 GMT",
       "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
     }
   },
-  "freshness_mismatches": [],
+  "freshness_mismatches": [
+    {
+      "source": "ofd",
+      "moved": "last_modified",
+      "previous": {
+        "last_modified": "Wed, 18 Nov 2026 03:42:11 GMT",
+        "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
+      },
+      "current": {
+        "last_modified": "Wed, 18 Nov 2026 03:42:12 GMT",
+        "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
+      }
+    }
+  ],
   "counts": {
-    "spoolmandb_filaments": 9745,
+    "spoolmandb_filaments": 10058,
     "spoolmandb_materials": 34,
     "ofd_filaments": 24323
   },
   "outputs": {
     "filaments.json": {
-      "count": 32268,
-      "sha256": "27e41e0aa4517a552601a854d30b106a28c3bab40a8bf23e603ec12bf5e285f0"
+      "count": 32875,
+      "sha256": "797513bda41a0a29ee22b4bd64d51b2742b06d33d5c14f9acfdedaded3c7c3e7"
     },
     "materials.json": {
-      "count": 105,
-      "sha256": "cb79f91a51c0041ee26d84e3574d745b58b97facb4af02a2e360a5eb3cefdca2"
+      "count": 113,
+      "sha256": "4899e264bed323d898b2f07ba38489c7cf4be5ee74f55e7c7d71305a1675ae36"
     }
   },
   "sources": {
@@ -41,7 +54,7 @@
       "commit": "016c0da92f7687758bd6eba4a52b8e770d6e2119"
     },
     "spoolmandb": {
-      "commit": "bbdc012ba9270d545f2be0f3e66603640d60d800"
+      "commit": "8e391c16be4bfde29dfc184e2f0b9a8d154ab550"
     }
   },
   "converter": {
