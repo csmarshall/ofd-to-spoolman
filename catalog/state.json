@@ -1,8 +1,8 @@
 {
-  "run_at": "2026-11-19T05:35:59+00:00",
-  "ofd_version": "2026.11.18",
-  "ofd_generated_at": "2026-11-18T03:41:30Z",
-  "ofd_version_changed_at": "2026-11-18T05:36:10+00:00",
+  "run_at": "2026-11-20T05:36:01+00:00",
+  "ofd_version": "2026.11.20",
+  "ofd_generated_at": "2026-11-20T03:06:59Z",
+  "ofd_version_changed_at": "2026-11-20T05:36:01+00:00",
   "spoolmandb_hash": "0d32511d656f18a8f2d5513da4de37f359f16db2f20991a671083381c08f5d66",
   "spoolmandb_changed_at": "2026-11-19T05:35:59+00:00",
   "inputs": {
@@ -15,24 +15,11 @@
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
-      "last_modified": "Wed, 18 Nov 2026 03:42:12 GMT",
-      "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
+      "last_modified": "Fri, 20 Nov 2026 03:08:00 GMT",
+      "sha256": "91ca11063a038f3524e0162c1737e9575d9fce78d4de077986bab98deeffd51c"
     }
   },
-  "freshness_mismatches": [
-    {
-      "source": "ofd",
-      "moved": "last_modified",
-      "previous": {
-        "last_modified": "Wed, 18 Nov 2026 03:42:11 GMT",
-        "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
-      },
-      "current": {
-        "last_modified": "Wed, 18 Nov 2026 03:42:12 GMT",
-        "sha256": "3d956f7cd0dd76f420a5cd3b3edf661eb1a235073efb3400abf91a39d686dc42"
-      }
-    }
-  ],
+  "freshness_mismatches": [],
   "counts": {
     "spoolmandb_filaments": 10058,
     "spoolmandb_materials": 34,
@@ -41,7 +28,7 @@
   "outputs": {
     "filaments.json": {
       "count": 32875,
-      "sha256": "797513bda41a0a29ee22b4bd64d51b2742b06d33d5c14f9acfdedaded3c7c3e7"
+      "sha256": "1b476274275b8d4d95486b7613c554cfed6883db08c4c955c08d92e248688e80"
     },
     "materials.json": {
       "count": 113,
@@ -50,8 +37,8 @@
   },
   "sources": {
     "ofd": {
-      "tag": "dataset-v2026.11.18",
-      "commit": "016c0da92f7687758bd6eba4a52b8e770d6e2119"
+      "tag": "dataset-v2026.11.20",
+      "commit": "cba160c1eac0821ecbef765c0ec054baa601d1a3"
     },
     "spoolmandb": {
       "commit": "8e391c16be4bfde29dfc184e2f0b9a8d154ab550"
