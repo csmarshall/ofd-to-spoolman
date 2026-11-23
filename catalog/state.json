@@ -1,8 +1,8 @@
 {
-  "run_at": "2026-11-22T05:35:50+00:00",
-  "ofd_version": "2026.11.22",
-  "ofd_generated_at": "2026-11-22T02:10:40Z",
-  "ofd_version_changed_at": "2026-11-22T05:35:50+00:00",
+  "run_at": "2026-11-23T05:35:56+00:00",
+  "ofd_version": "2026.11.23",
+  "ofd_generated_at": "2026-11-23T02:42:02Z",
+  "ofd_version_changed_at": "2026-11-23T05:35:56+00:00",
   "spoolmandb_hash": "0d32511d656f18a8f2d5513da4de37f359f16db2f20991a671083381c08f5d66",
   "spoolmandb_changed_at": "2026-11-19T05:35:59+00:00",
   "inputs": {
@@ -15,8 +15,8 @@
       "sha256": "1e5e4764ed06f64964c8557ff3da306ac174d03c9775a64bc6e791eba0ecbdf9"
     },
     "ofd": {
-      "last_modified": "Sun, 22 Nov 2026 02:11:23 GMT",
-      "sha256": "b0c147c952e97a0d7921abf43324b0d8b1bdf1a7d8c48ff7e0ff3026c0430ef0"
+      "last_modified": "Mon, 23 Nov 2026 02:42:58 GMT",
+      "sha256": "3d443d8ea340e07dbafad4b81c7ed9ac50eca018a5f2c49df9fc8839fda5324b"
     }
   },
   "freshness_mismatches": [],
@@ -37,8 +37,8 @@
   },
   "sources": {
     "ofd": {
-      "tag": "dataset-v2026.11.22",
-      "commit": "e2946fdb16404da07742fa6be7c34a567b7911f0"
+      "tag": "dataset-v2026.11.23",
+      "commit": "8bd34fa8c0c7f7a81adeb89f0ca15c5c0b403649"
     },
     "spoolmandb": {
       "commit": "8e391c16be4bfde29dfc184e2f0b9a8d154ab550"
