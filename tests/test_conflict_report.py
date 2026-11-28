@@ -11,6 +11,7 @@ from conftest import fetcher_for
 
 import ofd2spoolman
 from tools import conflict_report as cr
+from tools.legacy_ofd_convert import OFD_ALL_URL
 
 
 def entry(**overrides: Any) -> dict[str, Any]:
@@ -351,6 +352,16 @@ class TestOfdLinks:
 
 
 class TestMain:
+    @pytest.fixture
+    def sources(self) -> dict[str, bytes]:
+        """The conflict report still reads OFD's all.json (legacy mapping), not the published catalog the converter uses."""
+        fixtures = Path(__file__).parent / "fixtures"
+        return {
+            OFD_ALL_URL: (fixtures / "ofd_all.json").read_bytes(),
+            ofd2spoolman.SPOOLMANDB_URL + "filaments.json": (fixtures / "sdb" / "filaments.json").read_bytes(),
+            ofd2spoolman.SPOOLMANDB_URL + "materials.json": (fixtures / "sdb" / "materials.json").read_bytes(),
+        }
+
     @pytest.fixture
     def payloads(self, sources: dict[str, bytes]) -> dict[str, bytes]:
         sdb = json.loads(sources[ofd2spoolman.SPOOLMANDB_URL + "filaments.json"])

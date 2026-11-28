@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Build a Spoolman external-filament catalog from SpoolmanDB + the Open Filament Database.
+"""Build a Spoolman external-filament catalog from the Open Filament Database (OFD) + SpoolmanDB.
 
 Spoolman's "external" filament dropdown reads two files, `filaments.json` and
 `materials.json`, from EXTERNAL_DB_URL (format: spoolman/externaldb.py,
 ExternalFilament / ExternalMaterial). SpoolmanDB publishes exactly that, but only
-covers ~67 brands. The Open Filament Database (OFD, MIT) covers ~176 but publishes
-its own nested brand -> material -> filament -> variant -> size schema.
+covers ~67 brands. OFD publishes the same format itself (spoolman/filaments.json and
+spoolman/materials.json, plus manifest.json with the dataset version).
 
-This script merges both into one SpoolmanDB-format catalog:
-  * every SpoolmanDB entry is kept (verbatim apart from brand spelling being
-    unified across sources; SpoolmanDB has the stricter data policy:
-    measured spool weights, no generated values);
-  * every OFD size row becomes one ExternalFilament, unless SpoolmanDB already has
-    the same (manufacturer, material, colour, weight, diameter) — SpoolmanDB wins.
+This script merges both into one catalog (docs/adr/0009: OFD wins on overlap):
+  * every OFD filament and material is kept exactly as OFD published it (apart from
+    brand spelling being unified across sources, OFD seen first);
+  * every SpoolmanDB filament is kept unless OFD has an entry with the same
+    (manufacturer, material, name, weight, diameter) after normalisation, and every
+    SpoolmanDB material OFD does not list is kept.
 
 Published atomically into OUT_DIR, which a static web server (the `catalog`
 sidecar in docker-compose.yml) serves to Spoolman.
 
 Usage:
-    ofd2spoolman.py --out DIR [--dry-run] [--include-discontinued]
-Hidden (testing/CI): --from-ofd-file FILE --from-sdb-dir DIR build from local copies
-of the OFD all.json and SpoolmanDB filaments/materials.json instead of the network.
-Named so they don't share the --o prefix with --out (argparse abbreviations).
+    ofd2spoolman.py --out DIR [--dry-run]
+Hidden (testing/CI): --from-ofd-dir DIR --from-sdb-dir DIR build from local copies
+of OFD's manifest/filaments/materials.json and SpoolmanDB's filaments/materials.json
+instead of the network. Named so they don't share the --o prefix with --out (argparse abbreviations).
+`--include-discontinued` is accepted and ignored: OFD's published catalog keeps discontinued products.
 
 Env:
     LOG_LEVEL   DEBUG | INFO (default) | WARNING | ERROR
@@ -37,7 +38,6 @@ import json
 import logging
 import os
 import re
-import statistics
 import sys
 import tempfile
 import urllib.request
@@ -46,13 +46,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-OFD_URL = "https://api.openfilamentdatabase.org/json/all.json.gz"
+OFD_BASE_URL = "https://api.openfilamentdatabase.org/"
+OFD_FILAMENTS_URL = OFD_BASE_URL + "spoolman/filaments.json"
+OFD_MATERIALS_URL = OFD_BASE_URL + "spoolman/materials.json"
+OFD_MANIFEST_URL = OFD_BASE_URL + "manifest.json"
 SPOOLMANDB_URL = "https://donkie.github.io/SpoolmanDB/"
 USER_AGENT = "ofd2spoolman (self-hosted Spoolman catalog builder)"
 
-# Enum values accepted by Spoolman's ExternalFilament model.
-SPOOLMAN_FINISHES = {"matte", "glossy"}
-SPOOLMAN_PATTERNS = {"marble", "sparkle"}
 HEX_RE = re.compile(r"^[0-9a-f]{6}([0-9a-f]{2})?$")
 
 # Exit codes (also in the README). 0 and EXIT_PUBLISHED_WITH_WARNINGS are the only ones where
@@ -71,7 +71,7 @@ EXIT_PUBLISHED_WITH_WARNINGS = 10  # deliberately far from the failure codes: su
 # fraction between the two separates them; 50% was already the project's chosen point.
 MIN_RETAINED_FRACTION = 0.5
 
-# OFD rebuilds its export daily (~03:00 UTC). Three days = two missed rebuilds plus slack for a
+# OFD rebuilds its export daily (~03:00 UTC; manifest.json's generated_at). Three days = two missed rebuilds plus slack for a
 # weekend, which is the figure the issue asked for; a single missed night is not worth a warning.
 OFD_STALE_AFTER = timedelta(days=3)
 
@@ -97,12 +97,12 @@ def fetch(url: str) -> Fetched:
     return Fetched(gzip.decompress(data) if url.endswith(".gz") else data, last_modified)
 
 
-def local_fetcher(ofd_file: Path, sdb_dir: Path) -> Callable[[str], Fetched]:
-    """Build a fetcher that serves the OFD export and SpoolmanDB files from disk (for tests and CI); there is no Last-Modified."""
+def local_fetcher(ofd_dir: Path, sdb_dir: Path) -> Callable[[str], Fetched]:
+    """Build a fetcher that serves the OFD catalog files and SpoolmanDB files from disk (for tests and CI); there is no Last-Modified."""
 
     def fetch_local(url: str) -> Fetched:
-        path = ofd_file if url == OFD_URL else sdb_dir / url.rsplit("/", 1)[1]
-        return Fetched(path.read_bytes(), None)
+        base = ofd_dir if url.startswith(OFD_BASE_URL) else sdb_dir
+        return Fetched((base / url.rsplit("/", 1)[1]).read_bytes(), None)
 
     return fetch_local
 
@@ -123,242 +123,18 @@ def norm_hex(value: str | None) -> str | None:
     return h if HEX_RE.match(h) else None
 
 
-def pick_temp(lo: int | None, hi: int | None) -> int | None:
-    """Collapse an OFD min/max range into Spoolman's single temperature.
-
-    Uses the midpoint when both ends are real. OFD often records a bed minimum of 0
-    meaning "unheated is fine", which would drag a midpoint to nonsense, so a zero
-    end is ignored rather than averaged.
-    """
-    ends = [t for t in (lo, hi) if t]
-    if not ends:
-        return None
-    return round(sum(ends) / len(ends))
-
-
-def display_name(filament_name: str, brand_name: str, material: str, colour: str) -> str:
-    """Build a SpoolmanDB-style name: product line + colour, minus brand and bare material.
-
-    OFD filament names often repeat the brand ("123-3D Filament PLA"); Spoolman shows
-    manufacturer and material in their own columns, so strip a leading brand name.
-    The material is dropped only when it is the whole remaining line, so product lines
-    like "PETG+" or "PLA Matte" survive intact.
-    """
-    line = filament_name.strip()
-    if re.match(rf"{re.escape(brand_name)}(?=[\s_-]|$)", line, re.IGNORECASE):
-        line = line[len(brand_name) :].strip(" -_")
-    if norm(line) == norm(material):
-        line = ""
-    return f"{line} {colour}".strip() if line else colour
-
-
-def convert_ofd(ofd: dict[str, Any], include_discontinued: bool) -> list[dict[str, Any]]:
-    """Flatten OFD into one Spoolman ExternalFilament dict per size row."""
-    brands = {b["id"]: b for b in ofd["brands"]}
-    filaments = {f["id"]: f for f in ofd["filaments"]}
-    variants = {v["id"]: v for v in ofd["variants"]}
-    out: list[dict[str, Any]] = []
-    skipped: dict[str, int] = {}
-
-    def skip(reason: str) -> None:
-        skipped[reason] = skipped.get(reason, 0) + 1
-
-    for size in ofd["sizes"]:
-        variant = variants.get(size["variant_id"])
-        fil = filaments.get(variant["filament_id"]) if variant else None
-        brand = brands.get(fil["brand_id"]) if fil else None
-        if not (variant and fil and brand):
-            skip("dangling reference")
-            continue
-        # The canonical stored uuid, never the derived size["id"] (a uuid5 over names, GTIN and row position that changes on an edit).
-        # No fallback to it.
-        uuid = size.get("uuid")
-        if not uuid or not isinstance(uuid, str):
-            skip("missing uuid")
-            continue
-        if not include_discontinued and (size.get("discontinued") or variant.get("discontinued") or fil.get("discontinued")):
-            skip("discontinued")
-            continue
-        if not fil.get("density") or not size.get("filament_weight") or not size.get("diameter"):
-            skip("missing density/weight/diameter")
-            continue
-
-        traits = {k for k, v in (variant.get("traits") or {}).items() if v}
-        name = display_name(fil["name"], brand["name"], fil["material"], variant["name"])
-        if size.get("spool_refill"):
-            name += " (refill)"
-
-        finish = "matte" if "matte" in traits else None
-        pattern = "marble" if "imitates_marble" in traits else "sparkle" if "glitter" in traits else None
-        entry: dict[str, Any] = {
-            "id": f"ofd_{uuid}",
-            "manufacturer": brand["name"],
-            "name": name,
-            "material": fil["material"],
-            "density": float(fil["density"]),
-            "weight": float(size["filament_weight"]),
-            "spool_weight": float(size["empty_spool_weight"]) if size.get("empty_spool_weight") else None,
-            "spool_type": None,
-            "diameter": float(size["diameter"]),
-            "color_hex": norm_hex(variant.get("color_hex")),
-            "color_hexes": None,
-            "extruder_temp": pick_temp(fil.get("min_print_temperature"), fil.get("max_print_temperature")),
-            "bed_temp": pick_temp(fil.get("min_bed_temperature"), fil.get("max_bed_temperature")),
-            "finish": finish if finish in SPOOLMAN_FINISHES else None,
-            "multi_color_direction": None,
-            "pattern": pattern if pattern in SPOOLMAN_PATTERNS else None,
-            "translucent": bool(traits & {"translucent", "transparent"}),
-            "glow": "glow" in traits,
-        }
-        out.append(entry)
-
-    log.info("OFD: %d sizes -> %d filaments; skipped %s", len(ofd["sizes"]), len(out), skipped or "none")
-    return out
-
-
 # Spoolman's maximum filament name length: FilamentParameters.name max_length=64 in spoolman/api/v1/filament.py
 # and Filament.name String(64) in spoolman/database/models.py (checked against v0.27.0).
 NAME_MAX_LENGTH = 64
-ELLIPSIS = "…"
-# Share of the budget reserved for the end of an elided name, so a trailing colour survives.
-ELIDED_TAIL_BUDGET = NAME_MAX_LENGTH // 3
-# "(refill)" is a marker convert_ofd adds, not a colour list: it is never dropped.
-_TRAILING_PARENTHETICAL_RE = re.compile(r"\s*\((?!refill\))[^()]*\)\s*$")
-_EXAMPLES_LOGGED = 5
 
 
-def _elide(name: str, tail_budget: int) -> str:
-    """Keep whole words from the start and from the end (the end gets up to `tail_budget` characters), joined by one "… "."""
-    words = name.split()
-    tail_words: list[str] = []
-    while words and len(" ".join([words[-1], *tail_words])) <= tail_budget:
-        tail_words.insert(0, words.pop())
-    tail = " ".join(tail_words)
-    if not tail:
-        tail = words.pop()[-tail_budget:]  # one word too long on its own: cut it by characters
-
-    separator = ELLIPSIS + " "
-    head_budget = NAME_MAX_LENGTH - len(separator) - len(tail)
-    head_words: list[str] = []
-    for word in words:
-        if len(" ".join([*head_words, word])) > head_budget:
-            break
-        head_words.append(word)
-    head = " ".join(head_words) or (words[0][:head_budget] if words else "")
-    return f"{head}{separator}{tail}"
-
-
-def shorten_name(name: str) -> str:
-    """
-    Deterministically elide the middle of a name so it fits Spoolman's length limit.
-
-    Keeps whole words from the start and from the end, joined by one "… ", so a trailing colour such as "Neon Yellow"
-    survives. A name already within the limit is returned unchanged, which makes the function idempotent.
-    """
-    if len(name) <= NAME_MAX_LENGTH:
-        return name
-    return _elide(name, ELIDED_TAIL_BUDGET)
-
-
-def _elision_candidates(name: str) -> list[str]:
-    """The plain elision first, then the same name with the cut shifted (smaller tail, then larger), then a digest-tagged last resort."""
-    candidates = [shorten_name(name)]
-    for budget in [*range(ELIDED_TAIL_BUDGET - 1, 0, -1), *range(ELIDED_TAIL_BUDGET + 1, NAME_MAX_LENGTH // 2 + 1)]:
-        candidate = _elide(name, budget)
-        # A shifted cut must keep a head and a tail of whole words; only the plain elision may fall back to character cuts.
-        tail = candidate.rsplit(ELLIPSIS + " ", 1)[1]
-        whole_word_tail = name.endswith(" " + tail)
-        if len(candidate) <= NAME_MAX_LENGTH and not candidate.startswith(ELLIPSIS) and whole_word_tail and candidate not in candidates:
-            candidates.append(candidate)
-    return candidates
-
-
-def _digest_tagged(name: str, length: int) -> str:
-    """Last resort when no cut is unique: a short digest of the full original name, still within the limit."""
-    tag = hashlib.sha256(name.encode()).hexdigest()[:length]
-    return f"{_elide(name, ELIDED_TAIL_BUDGET)[: NAME_MAX_LENGTH - length - 1]}~{tag}"
-
-
-def shorten_long_names(records: list[dict[str, Any]], fixed: Sequence[dict[str, Any]] = ()) -> list[tuple[str, str, str, str]]:
-    """
-    Bring every record's name within Spoolman's limit, in place, and report what changed.
-
-    Per over-long name: (a) drop a trailing parenthetical if the remainder fits and does not collide with another
-    record's name for the same (manufacturer, material, weight, diameter); otherwise (b) elide the middle
-    (:func:`shorten_name`). (c) If an elided name still collides with another record's final name, shift the cut
-    (:func:`_elision_candidates`) and as a last resort tag it with a digest, so names stay unique. `fixed` records
-    (SpoolmanDB) are never altered but occupy their names. Collisions are judged against every other record, and elided
-    records are resolved in sorted order, so the result does not depend on record order.
-
-    Returns ``(id, original, shortened, step)`` tuples, step being "parenthetical" or "elided".
-    """
-
-    def key(record: dict[str, Any], name: str) -> tuple[Any, ...]:
-        return (record["manufacturer"], record["material"], record["weight"], record["diameter"], name)
-
-    def stripped(name: str) -> str:
-        return _TRAILING_PARENTHETICAL_RE.sub("", name)
-
-    in_use: dict[tuple[Any, ...], int] = {}
-    for record in [*fixed, *records]:
-        name = record["name"]
-        candidate = stripped(name) if len(name) > NAME_MAX_LENGTH else name
-        if len(name) > NAME_MAX_LENGTH and len(candidate) > NAME_MAX_LENGTH:
-            continue
-        in_use[key(record, candidate)] = in_use.get(key(record, candidate), 0) + 1
-
-    changes: list[tuple[str, str, str, str]] = []
-    to_elide: list[dict[str, Any]] = []
-    owners: dict[tuple[Any, ...], str] = {key(r, r["name"]): r["name"] for r in fixed}  # final name -> original that owns it
-    for record in records:
-        original = record["name"]
-        if len(original) <= NAME_MAX_LENGTH:
-            owners[key(record, original)] = original
-            continue
-        candidate = stripped(original)
-        if candidate and candidate != original and len(candidate) <= NAME_MAX_LENGTH and in_use[key(record, candidate)] == 1:
-            record["name"] = candidate
-            owners[key(record, candidate)] = original
-            changes.append((record["id"], original, candidate, "parenthetical"))
-        else:
-            to_elide.append(record)
-
-    for record in sorted(to_elide, key=lambda r: (r["manufacturer"], r["material"], r["weight"], r["diameter"], r["name"], r["id"])):
-        original = record["name"]
-
-        def free(name: str, original: str = original, record: dict[str, Any] = record) -> bool:
-            return owners.get(key(record, name), original) == original
-
-        chosen = next((c for c in _elision_candidates(original) if free(c)), None)
-        digest_length = 4
-        while chosen is None:
-            tagged = _digest_tagged(original, digest_length)
-            chosen = tagged if free(tagged) else None
-            digest_length += 1
-        record["name"] = chosen
-        owners[key(record, chosen)] = original
-        changes.append((record["id"], original, chosen, "elided"))
-    return changes
-
-
-def shorten_ofd_names(records: list[dict[str, Any]], fixed: Sequence[dict[str, Any]]) -> None:
-    """Shorten over-long OFD-derived names (never the SpoolmanDB `fixed` ones) and log the count and examples."""
-    changes = shorten_long_names(records, fixed)
-    if not changes:
-        return
-    steps = {step: sum(1 for c in changes if c[3] == step) for step in ("parenthetical", "elided")}
-    log.info("shortened %d name(s) to fit Spoolman's %d-character limit: %s", len(changes), NAME_MAX_LENGTH, steps)
-    for record_id, original, shortened, step in changes[:_EXAMPLES_LOGGED]:
-        log.info("  %s (%s): %r -> %r", record_id, step, original, shortened)
-    log.debug("all shortened names: %s", changes)
-
-
-def warn_over_long_fixed_names(records: Sequence[dict[str, Any]]) -> None:
-    """SpoolmanDB entries are passed through unchanged, so an over-long one is reported, not altered."""
+def warn_over_long_fixed_names(records: Sequence[dict[str, Any]], source: str = "SpoolmanDB") -> None:
+    """Both inputs are passed through unchanged (OFD's exporter owns its names), so an over-long name is reported, not altered."""
     too_long = [r for r in records if len(r["name"]) > NAME_MAX_LENGTH]
     for record in too_long:
         log.warning(
-            "SpoolmanDB name exceeds Spoolman's %d-character limit and is passed through unchanged: %s %r",
+            "%s name exceeds Spoolman's %d-character limit and is passed through unchanged: %s %r",
+            source,
             NAME_MAX_LENGTH,
             record["id"],
             record["name"],
@@ -366,35 +142,76 @@ def warn_over_long_fixed_names(records: Sequence[dict[str, Any]]) -> None:
 
 
 def dedupe_key(f: dict[str, Any]) -> tuple[str, str, str, float, float]:
-    """Identity used to decide that an OFD entry duplicates a SpoolmanDB one."""
+    """Identity used to decide that a SpoolmanDB entry duplicates an OFD one."""
     return (norm(f["manufacturer"]), norm(f["material"]), norm(f["name"]), float(f["weight"]), float(f["diameter"]))
 
 
-def median_int(entries: list[dict[str, Any]], key: str) -> int | None:
-    """Median of a numeric field across entries, ignoring missing/zero values."""
-    vals = [e[key] for e in entries if e.get(key)]
-    return round(statistics.median(vals)) if vals else None
+NUMERIC_FIELDS = frozenset({"weight", "diameter"})
 
 
-def merge_materials(sdb_materials: list[dict[str, Any]], filaments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep SpoolmanDB's materials; add any material only OFD knows, with median density/temps."""
-    known = {norm(m["material"]) for m in sdb_materials}
-    by_material: dict[str, list[dict[str, Any]]] = {}
-    for f in filaments:
-        if norm(f["material"]) not in known:
-            by_material.setdefault(f["material"], []).append(f)
-    added = []
-    for material, fs in sorted(by_material.items()):
-        added.append(
-            {
-                "material": material,
-                "density": round(statistics.median(f["density"] for f in fs), 3),
-                "extruder_temp": median_int(fs, "extruder_temp"),
-                "bed_temp": median_int(fs, "bed_temp"),
-            }
-        )
-    log.info("materials: %d from SpoolmanDB + %d OFD-only", len(sdb_materials), len(added))
-    return sdb_materials + added
+def validate_catalog(name: str, data: Any, required: Sequence[str]) -> list[dict[str, Any]]:
+    """The parsed OFD catalog file as a non-empty list of dicts whose `required` keys are present and well typed, else ValueError.
+
+    OFD's records are published as they are, so this is the only place a malformed upstream is caught before the
+    merge and dedupe_key index into them. Fields in NUMERIC_FIELDS must be int or float (not bool), the rest str.
+    The message names the file, index and field; the caller treats the ValueError as a failed fetch.
+    """
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"OFD {name} is not a non-empty JSON list")
+    for index, record in enumerate(data):
+        if not isinstance(record, dict):
+            raise ValueError(f"OFD {name}[{index}] is not an object")
+        for key in required:
+            if key not in record:
+                raise ValueError(f"OFD {name}[{index}].{key} is missing")
+            value = record[key]
+            numeric = isinstance(value, int | float) and not isinstance(value, bool)
+            if (key in NUMERIC_FIELDS and not numeric) or (key not in NUMERIC_FIELDS and not isinstance(value, str)):
+                kind = "a number" if key in NUMERIC_FIELDS else "a string"
+                raise ValueError(f"OFD {name}[{index}].{key} must be {kind}, got {value!r}")
+    return data
+
+
+FILAMENT_KEYS = ("id", "manufacturer", "name", "material", "weight", "diameter")
+MATERIAL_KEYS = ("material",)
+
+
+def merge_filaments(ofd_filaments: list[dict[str, Any]], sdb_filaments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """ADR 0009: OFD's records as published, plus every SpoolmanDB record whose dedupe_key OFD does not have.
+
+    Brand spelling is unified in place (first seen wins, OFD seen first), the one change made to either side.
+    """
+    canonical: dict[str, str] = {}
+    for f in ofd_filaments + sdb_filaments:
+        f["manufacturer"] = canonical.setdefault(norm(f["manufacturer"]), f["manufacturer"])
+    ofd_keys = {dedupe_key(f) for f in ofd_filaments}
+    sdb_only = [f for f in sdb_filaments if dedupe_key(f) not in ofd_keys]
+    log.info(
+        "merge: %d OFD filaments + %d SpoolmanDB-only (%d SpoolmanDB entries covered by OFD and dropped)",
+        len(ofd_filaments),
+        len(sdb_only),
+        len(sdb_filaments) - len(sdb_only),
+    )
+    return ofd_filaments + sdb_only
+
+
+def sdb_only_materials(ofd_materials: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """SpoolmanDB materials whose name (norm(), so PETG+ is not PETG) OFD's materials file does not have."""
+    known = {norm(m["material"]) for m in ofd_materials}
+    return [m for m in sdb_materials if norm(m["material"]) not in known]
+
+
+def materials_missing(filaments: list[dict[str, Any]], materials: list[dict[str, Any]]) -> list[str]:
+    """Sorted material names some filament uses that materials.json lacks (compared with norm(), so PETG+ is not PETG)."""
+    listed = {norm(m["material"]) for m in materials}
+    return sorted({f["material"] for f in filaments if norm(f["material"]) not in listed})
+
+
+def merge_materials(ofd_materials: list[dict[str, Any]], sdb_materials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """OFD's materials as published, plus the SpoolmanDB materials OFD does not have."""
+    extra = sdb_only_materials(ofd_materials, sdb_materials)
+    log.info("materials: %d from OFD + %d SpoolmanDB-only", len(ofd_materials), len(extra))
+    return ofd_materials + extra
 
 
 def _sweep_stale_temps(out_dir: Path, names: Sequence[str]) -> None:
@@ -428,10 +245,9 @@ def publish(out_dir: Path, files: dict[str, Any]) -> dict[str, dict[str, Any]]:
     hard link to its previous inode taken just before the renames (best effort, logged either way).
     A file that was live is never deleted: if it cannot be restored, the new one stays and ERROR says so.
     Files are renamed in REVERSE of the given order: callers pass filaments first, so materials
-    land first. Spoolman resolves each filament's material by name, and new materials with the old
-    filaments only works for materials the old filaments still reference (merge_materials regenerates
-    the set), whereas new filaments pointing at materials the old materials.json lacks would fail.
-    So this order is the less bad one, not a guarantee.
+    land first. The merged materials.json is OFD's materials plus SpoolmanDB's that OFD lacks, and it
+    does not cover every material the filaments name (see materials_missing), so this order is a
+    convention, not a guarantee that a filament's material is always listed.
 
     Returns {name: {"count", "sha256"}} for the bytes written, for the state file's provenance record.
     """
@@ -566,18 +382,29 @@ def same_value(a: Any, b: Any) -> bool:
 def check_spoolmandb_superset(
     sdb_filaments: list[dict[str, Any]],
     sdb_materials: list[dict[str, Any]],
+    ofd_filaments: list[dict[str, Any]],
+    ofd_materials: list[dict[str, Any]],
     filaments: list[dict[str, Any]],
     materials: list[dict[str, Any]],
 ) -> list[str]:
-    """Problems (empty = fine) found comparing raw SpoolmanDB data with the merged output.
+    """Problems (empty = fine) found comparing the raw inputs with the merged output (ADR 0009).
 
-    EXTERNAL_DB_URL replaces Spoolman's default SpoolmanDB, so anything we lose is gone from the
-    dropdown. The snapshot must predate the brand-spelling rewrite: manufacturer is compared by
-    norm(), every other field exactly.
+    EXTERNAL_DB_URL replaces Spoolman's default SpoolmanDB, so anything we lose is gone from the dropdown, except what
+    OFD deliberately replaces. A SpoolmanDB filament OFD does not cover (no OFD record with its dedupe_key) must be in
+    the output unchanged; one OFD does cover must be accounted for by an OFD record with the same dedupe_key in the
+    output. A SpoolmanDB material OFD's materials lack must be in the output unchanged. The snapshots must predate
+    the brand-spelling rewrite: manufacturer is compared by norm(), every other field exactly.
     """
     problems: list[str] = []
     out_by_id = {f["id"]: f for f in filaments}
+    ofd_ids = {f["id"] for f in ofd_filaments}
+    ofd_keys = {dedupe_key(f) for f in ofd_filaments}
+    out_ofd_keys = {dedupe_key(f) for f in filaments if f["id"] in ofd_ids}
     for want in sdb_filaments:
+        if dedupe_key(want) in ofd_keys:
+            if dedupe_key(want) not in out_ofd_keys:
+                problems.append(f"SpoolmanDB filament {want['id']} is covered by OFD but no OFD record with its key is in the output")
+            continue
         got = out_by_id.get(want["id"])
         if got is None:
             problems.append(f"SpoolmanDB filament {want['id']} missing from output")
@@ -590,7 +417,10 @@ def check_spoolmandb_superset(
                 problems.append(f"SpoolmanDB filament {want['id']} field {key!r}: {want.get(key)!r} -> {got.get(key)!r}")
     # Materials as a multiset: duplicate names must each find their own identical output entry.
     remaining = list(materials)
+    ofd_names = {norm(m["material"]) for m in ofd_materials}
     for want in sdb_materials:
+        if norm(want["material"]) in ofd_names:
+            continue
         match = next((i for i, got in enumerate(remaining) if same_value(want, got)), None)
         if match is not None:
             del remaining[match]
@@ -652,8 +482,10 @@ def load_recorded_inputs(raw: Any) -> dict[str, dict[str, str | None]]:
 # own content changed. GitHub Pages (SpoolmanDB) restamps every file on each deploy, so materials.json gets a
 # new Last-Modified, with identical bytes, whenever filaments.json changes. For these a Last-Modified-only
 # move is expected (status "redeployed", INFO); only changed content under an unchanged Last-Modified is a
-# mismatch. Every other input (OFD) warns on either one-sided move.
-DEPLOY_STAMPED_SOURCES = frozenset({"spoolmandb_filaments", "spoolmandb_materials"})
+# mismatch. OFD's two catalog files are listed on the evidence that they carry the build's deploy time (their
+# Last-Modified is a second after manifest.json's, and a rebuild with unchanged data would restamp them); the
+# manifest's content changes every build, so it is not listed and warns on either one-sided move.
+DEPLOY_STAMPED_SOURCES = frozenset({"spoolmandb_filaments", "spoolmandb_materials", "ofd_filaments", "ofd_materials"})
 
 
 class FreshnessResult(NamedTuple):
@@ -753,7 +585,7 @@ def check_source_shrink(prev_state: dict[str, Any], sdb_count: int, ofd_count: i
 def build_state(
     prev_state: dict[str, Any],
     now: datetime,
-    ofd: dict[str, Any],
+    manifest: dict[str, Any],
     sdb_filaments: list[dict[str, Any]],
     sdb_materials: list[dict[str, Any]],
     ofd_count: int,
@@ -762,14 +594,14 @@ def build_state(
 ) -> dict[str, Any]:
     """The state to record after a successful publish; *_changed_at only moves when the value does."""
     stamp = now.isoformat(timespec="seconds")
-    version = ofd.get("version")
+    version = manifest.get("dataset_version")
     content_hash = spoolmandb_hash(sdb_filaments, sdb_materials)
     version_same = prev_state.get("ofd_version") == version and prev_state.get("ofd_version_changed_at")
     hash_same = prev_state.get("spoolmandb_hash") == content_hash and prev_state.get("spoolmandb_changed_at")
     return {
         "run_at": stamp,
         "ofd_version": version,
-        "ofd_generated_at": ofd.get("generated_at"),
+        "ofd_generated_at": manifest.get("generated_at"),
         "ofd_version_changed_at": prev_state["ofd_version_changed_at"] if version_same else stamp,
         "spoolmandb_hash": content_hash,
         "spoolmandb_changed_at": prev_state["spoolmandb_changed_at"] if hash_same else stamp,
@@ -786,22 +618,22 @@ def build_state(
     }
 
 
-def check_ofd_stalled(ofd: dict[str, Any], prev_state: dict[str, Any], now: datetime) -> list[str]:
+def check_ofd_stalled(manifest: dict[str, Any], prev_state: dict[str, Any], now: datetime) -> list[str]:
     """Warnings if OFD's export has not advanced for OFD_STALE_AFTER.
 
-    OFD's own `generated_at` is authoritative when present. Without it we can only fall back to
-    when this tool first saw the current `version`.
+    The manifest's own `generated_at` is authoritative when present. Without it we can only fall back to
+    when this tool first saw the current `dataset_version`.
     """
-    generated = parse_timestamp(ofd.get("generated_at"))
-    if ofd.get("generated_at") is not None and generated is None:
-        log.warning("OFD generated_at %r is not a parseable timestamp; staleness not checked from it", ofd.get("generated_at"))
-    version = ofd.get("version")
+    generated = parse_timestamp(manifest.get("generated_at"))
+    if manifest.get("generated_at") is not None and generated is None:
+        log.warning("OFD generated_at %r is not a parseable timestamp; staleness not checked from it", manifest.get("generated_at"))
+    version = manifest.get("dataset_version")
     first_seen = parse_timestamp(prev_state.get("ofd_version_changed_at"))
     # A generated_at in the future yields a negative age and never fires; that is deliberate (clock skew is not a stall).
     if generated is not None:
-        age, basis = now - generated, f"generated_at {ofd['generated_at']}"
+        age, basis = now - generated, f"generated_at {manifest['generated_at']}"
     elif version and prev_state.get("ofd_version") == version and first_seen is not None:
-        age, basis = now - first_seen, f"version {version} unchanged since first seen"
+        age, basis = now - first_seen, f"dataset_version {version} unchanged since first seen"
     else:
         return []
     if age > OFD_STALE_AFTER:
@@ -835,9 +667,9 @@ def main(
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True, help="output directory the static web server serves")
     ap.add_argument("--dry-run", action="store_true", help="build and report, but write nothing")
-    ap.add_argument("--include-discontinued", action="store_true", help="keep OFD products marked discontinued")
+    ap.add_argument("--include-discontinued", action="store_true", help="deprecated, ignored (OFD keeps discontinued products)")
     # Hidden: read the sources from disk instead of the network (CI schema job).
-    ap.add_argument("--from-ofd-file", type=Path, help=argparse.SUPPRESS)
+    ap.add_argument("--from-ofd-dir", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--from-sdb-dir", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--now", help=argparse.SUPPRESS)  # pin the clock (ISO-8601); CI fixtures age out otherwise
     args = ap.parse_args(argv)
@@ -846,10 +678,10 @@ def main(
         if pinned is None:
             ap.error("--now must be an ISO-8601 timestamp")
         now = pinned
-    if (args.from_ofd_file is None) != (args.from_sdb_dir is None):
-        ap.error("--from-ofd-file and --from-sdb-dir must be given together")
-    if args.from_ofd_file is not None:
-        fetcher = local_fetcher(args.from_ofd_file, args.from_sdb_dir)
+    if (args.from_ofd_dir is None) != (args.from_sdb_dir is None):
+        ap.error("--from-ofd-dir and --from-sdb-dir must be given together")
+    if args.from_ofd_dir is not None:
+        fetcher = local_fetcher(args.from_ofd_dir, args.from_sdb_dir)
     fetch_source = fetcher or fetch
     now = now or datetime.now(UTC)
 
@@ -858,37 +690,39 @@ def main(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    if args.include_discontinued:
+        log.warning("--include-discontinued is ignored: OFD's published catalog already includes discontinued products")
     try:
         fetched = {
             "spoolmandb_filaments": fetch_source(SPOOLMANDB_URL + "filaments.json"),
             "spoolmandb_materials": fetch_source(SPOOLMANDB_URL + "materials.json"),
-            "ofd": fetch_source(OFD_URL),
+            "ofd_filaments": fetch_source(OFD_FILAMENTS_URL),
+            "ofd_materials": fetch_source(OFD_MATERIALS_URL),
+            "ofd_manifest": fetch_source(OFD_MANIFEST_URL),
         }
         sdb_filaments = json.loads(fetched["spoolmandb_filaments"].data)
         sdb_materials = json.loads(fetched["spoolmandb_materials"].data)
-        ofd = json.loads(fetched["ofd"].data)
+        ofd_filaments = validate_catalog("filaments.json", json.loads(fetched["ofd_filaments"].data), FILAMENT_KEYS)
+        ofd_materials = validate_catalog("materials.json", json.loads(fetched["ofd_materials"].data), MATERIAL_KEYS)
+        manifest = json.loads(fetched["ofd_manifest"].data)
+        if not isinstance(manifest, dict):
+            raise ValueError("OFD manifest.json is not a JSON object")
     except Exception as exc:  # network / parse failure: keep the last good catalog
         log.error("fetch failed, leaving existing catalog untouched: %s", exc)
         return EXIT_FETCH_FAILED
-    log.info("SpoolmanDB: %d filaments, %d materials; OFD dataset %s", len(sdb_filaments), len(sdb_materials), ofd.get("version"))
+    log.info(
+        "SpoolmanDB: %d filaments, %d materials; OFD: %d filaments, %d materials, dataset %s",
+        len(sdb_filaments),
+        len(sdb_materials),
+        len(ofd_filaments),
+        len(ofd_materials),
+        manifest.get("dataset_version"),
+    )
 
-    ofd_filaments = convert_ofd(ofd, args.include_discontinued)
-    sdb_raw = copy.deepcopy((sdb_filaments, sdb_materials))  # before the brand-spelling rewrite below
-
-    # One spelling per brand in the dropdown ("SUNLU" vs "Sunlu"): the first seen
-    # wins, and SpoolmanDB is seen first.
-    canonical: dict[str, str] = {}
-    for f in sdb_filaments + ofd_filaments:
-        f["manufacturer"] = canonical.setdefault(norm(f["manufacturer"]), f["manufacturer"])
-
-    sdb_keys = {dedupe_key(f) for f in sdb_filaments}
-    unique_ofd = [f for f in ofd_filaments if dedupe_key(f) not in sdb_keys]
-    log.info("dedupe: %d OFD entries already in SpoolmanDB, %d added", len(ofd_filaments) - len(unique_ofd), len(unique_ofd))
-
+    raw = copy.deepcopy((sdb_filaments, sdb_materials, ofd_filaments, ofd_materials))  # before the brand-spelling rewrite below
     warn_over_long_fixed_names(sdb_filaments)
-    shorten_ofd_names(unique_ofd, fixed=sdb_filaments)
-
-    filaments = sdb_filaments + unique_ofd
+    warn_over_long_fixed_names(ofd_filaments, source="OFD")
+    filaments = merge_filaments(ofd_filaments, sdb_filaments)
     ids = [f["id"] for f in filaments]
     if len(ids) != len(set(ids)):
         log.error("duplicate ids in merged catalog; refusing to publish")
@@ -908,17 +742,20 @@ def main(
         log.error("merged catalog has %d entries vs %d published; refusing to shrink by >50%%", len(filaments), prev)
         return EXIT_CATALOG_SHRANK
 
-    materials = merge_materials(sdb_materials, filaments)
+    materials = merge_materials(ofd_materials, sdb_materials)
+    unknown = materials_missing(filaments, materials)
+    if unknown:
+        log.info("filaments reference %d material(s) missing from materials.json: %s", len(unknown), unknown[:10])
     brands = len({f["manufacturer"] for f in filaments})
     log.info("merged: %d filaments across %d manufacturers", len(filaments), brands)
 
     # Drift checks. Hard guards first; they also run on --dry-run because they only read.
     prev_state = load_state(args.out)
-    missing = check_spoolmandb_superset(sdb_raw[0], sdb_raw[1], filaments, materials)
+    missing = check_spoolmandb_superset(*raw, filaments, materials)
     for problem in missing:
         log.error("coverage: %s", problem)
     if missing:
-        log.error("output is not a superset of SpoolmanDB; refusing to publish")
+        log.error("output does not cover SpoolmanDB (beyond what OFD replaces); refusing to publish")
         return EXIT_SPOOLMANDB_NOT_SUPERSET
     shrunk = check_source_shrink(prev_state, len(sdb_filaments), len(ofd_filaments))
     for problem in shrunk:
@@ -926,7 +763,7 @@ def main(
     if shrunk:
         log.error("a source shrank by more than %d%%; refusing to publish", round((1 - MIN_RETAINED_FRACTION) * 100))
         return EXIT_SOURCE_SHRANK
-    warnings = check_ofd_stalled(ofd, prev_state, now)
+    warnings = check_ofd_stalled(manifest, prev_state, now)
     for warning in warnings:
         log.warning("%s", warning)
     # Reported only: a freshness mismatch must neither block publishing nor change the exit code (alert routing is #24).
@@ -939,7 +776,7 @@ def main(
         log.info("dry run: nothing written")
         return exit_code
     outputs = publish(args.out, {"filaments.json": sorted(filaments, key=lambda f: f["id"]), "materials.json": materials})
-    write_state(args.out, build_state(prev_state, now, ofd, sdb_raw[0], sdb_raw[1], len(ofd_filaments), freshness, outputs))
+    write_state(args.out, build_state(prev_state, now, manifest, raw[0], raw[1], len(ofd_filaments), freshness, outputs))
     return exit_code
 
 

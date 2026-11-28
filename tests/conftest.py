@@ -20,16 +20,18 @@ FIXTURE_NOW = datetime(2026, 10, 13, 4, 1, 57, tzinfo=UTC)
 
 @pytest.fixture
 def ofd() -> dict[str, Any]:
-    """The trimmed OFD all.json (fresh copy per test; convert/merge mutate their inputs)."""
+    """The trimmed OFD all.json, LEGACY: only tools/conflict_report.py and its mapping still read this shape."""
     data: dict[str, Any] = json.loads((FIXTURES / "ofd_all.json").read_text())
     return data
 
 
 @pytest.fixture
 def sources() -> dict[str, bytes]:
-    """URL -> payload for every source the script fetches."""
+    """URL -> payload for every source the script fetches (tests/fixtures/ofd and tests/fixtures/sdb)."""
     return {
-        ofd2spoolman.OFD_URL: (FIXTURES / "ofd_all.json").read_bytes(),
+        ofd2spoolman.OFD_FILAMENTS_URL: (FIXTURES / "ofd" / "filaments.json").read_bytes(),
+        ofd2spoolman.OFD_MATERIALS_URL: (FIXTURES / "ofd" / "materials.json").read_bytes(),
+        ofd2spoolman.OFD_MANIFEST_URL: (FIXTURES / "ofd" / "manifest.json").read_bytes(),
         ofd2spoolman.SPOOLMANDB_URL + "filaments.json": (FIXTURES / "sdb" / "filaments.json").read_bytes(),
         ofd2spoolman.SPOOLMANDB_URL + "materials.json": (FIXTURES / "sdb" / "materials.json").read_bytes(),
     }

@@ -35,7 +35,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ofd2spoolman
-from ofd2spoolman import OFD_URL, SPOOLMANDB_URL, convert_ofd, dedupe_key, norm, norm_hex
+from ofd2spoolman import SPOOLMANDB_URL, dedupe_key, norm, norm_hex
+from tools.legacy_ofd_convert import OFD_ALL_URL, convert_ofd, local_fetcher  # LEGACY mapping, see that module
 
 log = logging.getLogger("conflict_report")
 
@@ -404,14 +405,14 @@ def main(argv: Sequence[str] | None = None, fetcher: Callable[[str], ofd2spoolma
     if (args.from_ofd_file is None) != (args.from_sdb_dir is None):
         ap.error("--from-ofd-file and --from-sdb-dir must be given together")
     if args.from_ofd_file is not None:
-        fetcher = ofd2spoolman.local_fetcher(args.from_ofd_file, args.from_sdb_dir)
+        fetcher = local_fetcher(args.from_ofd_file, args.from_sdb_dir)
     fetch_source = fetcher or ofd2spoolman.fetch
 
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     try:
         sdb_filaments = json.loads(fetch_source(SPOOLMANDB_URL + "filaments.json").data)
-        ofd = json.loads(fetch_source(OFD_URL).data)
+        ofd = json.loads(fetch_source(OFD_ALL_URL).data)
     except Exception as exc:
         log.error("fetch failed: %s", exc)
         return 2

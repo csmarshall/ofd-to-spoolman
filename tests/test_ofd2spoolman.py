@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import logging
@@ -17,7 +16,7 @@ import pytest
 from conftest import FIXTURE_NOW
 
 import ofd2spoolman
-from ofd2spoolman import display_name, norm, norm_hex, pick_temp
+from ofd2spoolman import norm, norm_hex
 
 RunFn = Callable[..., int]
 
@@ -27,46 +26,8 @@ def load(out_dir: Path, name: str = "filaments.json") -> list[dict[str, Any]]:
     return data
 
 
-def by_name(entries: list[dict[str, Any]], manufacturer: str, name: str) -> dict[str, Any]:
-    (match,) = [e for e in entries if e["manufacturer"] == manufacturer and e["name"] == name]
-    return match
-
-
-class TestDisplayName:
-    def test_brand_prefix_stripped_and_bare_material_dropped(self) -> None:
-        assert display_name("SUNLU PLA", "SUNLU", "PLA", "Black") == "Black"
-
-    def test_brand_prefix_with_separator_stripped(self) -> None:
-        assert display_name("Acme - Silk PLA", "Acme", "PLA", "Gold") == "Silk PLA Gold"
-
-    def test_product_line_kept(self) -> None:
-        assert display_name("PLA Matte", "Acme", "PLA", "Red") == "PLA Matte Red"
-
-    def test_petg_plus_survives(self) -> None:
-        """Regression: norm() once stripped '+', making 'PETG+' look like bare 'PETG' and dropping it."""
-        assert display_name("PETG+", "Acme", "PETG", "Black") == "PETG+ Black"
-
-    def test_brand_that_prefixes_a_product_word_is_not_stripped(self) -> None:
-        """Regression #11: 'Acme' must not be cut out of 'Acmeflex'."""
-        assert display_name("Acmeflex PLA", "Acme", "PLA", "Red") == "Acmeflex PLA Red"
-
-    def test_brand_with_digits_and_hyphen_stripped(self) -> None:
-        assert display_name("123-3D Filament PLA", "123-3D", "PLA", "Red") == "Filament PLA Red"
-
-    def test_brand_with_spaced_hyphen_stripped(self) -> None:
-        assert display_name("Brand - PLA", "Brand", "PLA", "Red") == "Red"
-
-    def test_brand_directly_followed_by_hyphen_stripped(self) -> None:
-        assert display_name("Brand-PLA", "Brand", "PLA", "Red") == "Red"
-
-    def test_brand_only_name_stripped(self) -> None:
-        assert display_name("Brand", "Brand", "PLA", "Red") == "Red"
-
-    def test_brand_underscore_separator_stripped_case_insensitive(self) -> None:
-        assert display_name("brand_PLA", "Brand", "PLA", "Red") == "Red"
-
-    def test_bare_material_without_brand_dropped(self) -> None:
-        assert display_name("PETG", "Acme", "PETG", "Black") == "Black"
+FIXTURES = Path(__file__).parent / "fixtures"
+OFD_BLACK_ID = "ofd_00000000-0000-5000-8000-000000000501"  # the fixture's "SUNLU Black", which SpoolmanDB also has as "Sunlu Black"
 
 
 class TestNorm:
@@ -76,24 +37,6 @@ class TestNorm:
 
     def test_strips_case_and_punctuation(self) -> None:
         assert norm("Poly-Terra (TM) Black!") == "polyterratmblack"
-
-
-class TestPickTemp:
-    def test_midpoint(self) -> None:
-        assert pick_temp(190, 220) == 205
-
-    def test_zero_lower_bound_ignored(self) -> None:
-        assert pick_temp(0, 60) == 60
-
-    def test_zero_upper_bound_ignored(self) -> None:
-        assert pick_temp(50, 0) == 50
-
-    def test_both_missing_is_none(self) -> None:
-        assert pick_temp(None, None) is None
-        assert pick_temp(0, 0) is None
-
-    def test_single_end(self) -> None:
-        assert pick_temp(None, 70) == 70
 
 
 class TestNormHex:
@@ -109,135 +52,164 @@ class TestNormHex:
         assert norm_hex(bad) is None
 
 
-class TestConvertOfd:
-    def test_traits_map_to_spoolman_enums(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
-        red = by_name(entries, "Acme", "PLA Matte Red")
-        assert (red["finish"], red["pattern"]) == ("matte", "sparkle")
-        marble = by_name(entries, "Acme", "PLA Matte Marble Grey")
-        assert (marble["finish"], marble["pattern"], marble["translucent"]) == (None, "marble", True)
-        orange = by_name(entries, "Zeta", "Flex Orange")
-        assert (orange["translucent"], orange["glow"]) == (True, True)
-
-    def test_nothing_invented(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
-        black = by_name(entries, "Acme", "PETG+ Black")
-        assert black["spool_weight"] is None
-        assert by_name(entries, "Acme", "PLA Matte Mystery")["color_hex"] is None
-        assert by_name(entries, "Acme", "PLA Matte Red")["spool_weight"] == 180.0
-
-    def test_refill_marked_and_ids_use_size_uuid(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
-        refill = by_name(entries, "Zeta", "Flex Orange (refill)")
-        assert refill["weight"] == 750.0
-        size_uuids = {s["uuid"] for s in ofd["sizes"]}
-        assert all(e["id"].removeprefix("ofd_") in size_uuids for e in entries)
-
-    def test_id_is_built_from_uuid_never_from_derived_id(self, ofd: dict[str, Any]) -> None:
-        """Regression #28: size["id"] is a derived uuid5 that changes on a rename/GTIN edit; size["uuid"] is the stored canonical one."""
-        derived = {s["id"] for s in ofd["sizes"]}
-        assert derived.isdisjoint(s["uuid"] for s in ofd["sizes"])  # fixture must tell the two apart
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
-        ids = {e["id"] for e in entries}
-        assert ids
-        assert not {f"ofd_{d}" for d in derived} & ids
-        assert ids <= {f"ofd_{s['uuid']}" for s in ofd["sizes"]}
-
-    def test_id_follows_uuid_when_derived_id_changes(self, ofd: dict[str, Any]) -> None:
-        before = {e["id"] for e in ofd2spoolman.convert_ofd(copy.deepcopy(ofd), include_discontinued=True)}
-        for size in ofd["sizes"]:
-            size["id"] = "ffffffff-" + size["id"][9:]
-        after = {e["id"] for e in ofd2spoolman.convert_ofd(ofd, include_discontinued=True)}
-        assert before == after
-
-    def test_sizes_without_uuid_are_skipped_and_counted(self, ofd: dict[str, Any], caplog: pytest.LogCaptureFixture) -> None:
-        baseline = len(ofd2spoolman.convert_ofd(copy.deepcopy(ofd), include_discontinued=False))
-        victim = next(s for s in ofd["sizes"] if s.get("variant_id") and "uuid" in s)
-        victim_id = victim["id"]
-        del victim["uuid"]
-        ofd["sizes"].append({**victim, "uuid": ""})
-        with caplog.at_level(logging.INFO):
-            entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
-        assert len(entries) <= baseline
-        assert all(victim_id not in e["id"] for e in entries)
-        assert "missing uuid" in caplog.text
-
-    def test_incomplete_and_dangling_rows_skipped(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
-        names = {e["name"] for e in entries}
-        assert "Mystery" not in names and "Pink" not in names  # filament without density
-        assert len(entries) == 14  # 17 sizes - no density - no weight - dangling
-
-    def test_discontinued_filtered_by_default(self, ofd: dict[str, Any]) -> None:
-        names = {e["name"] for e in ofd2spoolman.convert_ofd(ofd, include_discontinued=False)}
-        assert "PLA Matte Retired Blue" not in names  # discontinued variant
-        assert "Old PLA Green" not in names and "PLA Green" not in names  # discontinued filament
-        assert len(names) == 11
-
-    def test_include_discontinued_keeps_them(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=True)
-        names = {e["name"] for e in entries}
-        assert {"PLA Matte Retired Blue", "Old PLA Green"} <= names
-        assert len(entries) == 14
-
-
 class TestMergeMaterials:
-    def test_ofd_only_material_added_with_median_density(self, ofd: dict[str, Any]) -> None:
-        entries = ofd2spoolman.convert_ofd(ofd, include_discontinued=False)
-        sdb = [{"material": "PLA", "density": 1.24}, {"material": "PETG", "density": 1.27}]
-        merged = ofd2spoolman.merge_materials(sdb, entries)
-        assert merged[:2] == sdb
-        (added,) = merged[2:]
-        assert added["material"] == "TPU95"
-        # median across the three TPU95 entries (two 1.20 sizes, one 1.22)
-        assert added["density"] == 1.2
-        assert added["extruder_temp"] == 220 and added["bed_temp"] == 40
+    def test_ofd_materials_as_published_then_spoolmandb_only(self) -> None:
+        ofd = [{"material": "PLA", "density": 1.25}, {"material": "TPU95", "density": 1.2}]
+        sdb = [{"material": "PLA", "density": 1.24}, {"material": "PETG+", "density": 1.27}, {"material": "PETG", "density": 1.27}]
+        assert ofd2spoolman.merge_materials(ofd, sdb) == [*ofd, sdb[1], sdb[2]]
+
+    def test_norm_keeps_plus_so_petg_plus_is_not_petg(self) -> None:
+        sdb = [{"material": "PETG+", "density": 1.3}]
+        assert ofd2spoolman.merge_materials([{"material": "PETG", "density": 1.27}], sdb)[1:] == sdb
+
+    def test_name_match_ignores_case_and_punctuation(self) -> None:
+        assert ofd2spoolman.merge_materials([{"material": "PA-CF", "density": 1.2}], [{"material": "pa cf", "density": 1.1}]) == [
+            {"material": "PA-CF", "density": 1.2}
+        ]
+
+
+class TestMergeFilaments:
+    def rec(self, rid: str, brand: str = "Acme", name: str = "Red", **kw: Any) -> dict[str, Any]:
+        return {"id": rid, "manufacturer": brand, "material": "PLA", "name": name, "weight": 1000.0, "diameter": 1.75, **kw}
+
+    def test_ofd_wins_on_key_and_spoolmandb_only_is_kept(self) -> None:
+        ofd = [self.rec("ofd_1", extruder_temp=215)]
+        sdb = [self.rec("sdb_1", extruder_temp=210), self.rec("sdb_2", name="Blue")]
+        assert ofd2spoolman.merge_filaments(ofd, sdb) == [ofd[0], sdb[1]]
+
+    def test_key_is_normalised_and_includes_weight_and_diameter(self) -> None:
+        ofd = [self.rec("ofd_1", brand="ACME", name="red!")]
+        sdb = [self.rec("sdb_1"), self.rec("sdb_2", weight=500.0), self.rec("sdb_3", diameter=2.85)]
+        assert [f["id"] for f in ofd2spoolman.merge_filaments(ofd, sdb)] == ["ofd_1", "sdb_2", "sdb_3"]
+
+    def test_brand_spelling_ofd_seen_first(self) -> None:
+        ofd = [self.rec("ofd_1", brand="SUNLU")]
+        sdb = [self.rec("sdb_1", brand="Sunlu", name="Blue")]
+        assert {f["manufacturer"] for f in ofd2spoolman.merge_filaments(ofd, sdb)} == {"SUNLU"}
+
+
+class TestUnknownMaterials:
+    def test_comparison_uses_norm_like_the_rest(self) -> None:
+        filaments = [{"material": "pla"}, {"material": "TPU-95A"}, {"material": "PETG+"}]
+        materials = [{"material": "PLA"}, {"material": "PETG"}]
+        assert ofd2spoolman.materials_missing(filaments, materials) == ["PETG+", "TPU-95A"]  # PETG+ is not PETG; pla is PLA
+
+    def test_run_logs_the_gap_at_info_only(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sdb = json.loads(sources[SDB_F])
+        sdb[1]["material"] = "PETG-CF"
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, payloads=with_sdb(sources, filaments=sdb)) == 0
+        (record,) = [r for r in caplog.records if "missing from materials.json" in r.getMessage()]
+        assert record.levelno == logging.INFO and "PETG-CF" in record.getMessage()
+
+
+class TestValidateCatalogTypes:
+    @pytest.mark.parametrize(
+        ("field", "bad"),
+        [("weight", None), ("name", None), ("weight", True), ("diameter", "1.75"), ("id", 5), ("manufacturer", ["x"]), ("material", None)],
+    )
+    def test_bad_field_type_exits_2_with_a_clear_log_line(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture, field: str, bad: Any
+    ) -> None:
+        ofd = json.loads(sources[ofd2spoolman.OFD_FILAMENTS_URL])
+        ofd[2][field] = bad
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_FILAMENTS_URL: json.dumps(ofd).encode()}) == 2
+        assert f"filaments.json[2].{field}" in caplog.text
+        assert "Traceback" not in caplog.text
+        assert not (tmp_path / "out").exists()
+
+    def test_bad_material_name_type_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        mats = json.loads(sources[ofd2spoolman.OFD_MATERIALS_URL])
+        mats[0]["material"] = None
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_MATERIALS_URL: json.dumps(mats).encode()}) == 2
+
+    def test_ints_are_numeric(self) -> None:
+        record = {"id": "a", "manufacturer": "M", "name": "N", "material": "PLA", "weight": 1000, "diameter": 2}
+        assert ofd2spoolman.validate_catalog("filaments.json", [record], ofd2spoolman.FILAMENT_KEYS) == [record]
+
+
+class TestValidateCatalog:
+    @pytest.mark.parametrize(
+        "data", [None, {}, [], "x", [1], [{"id": "a"}]], ids=["null", "object", "empty", "string", "non-object", "missing-keys"]
+    )
+    def test_rejects(self, data: Any) -> None:
+        with pytest.raises(ValueError):
+            ofd2spoolman.validate_catalog("filaments.json", data, ofd2spoolman.FILAMENT_KEYS)
 
 
 class TestMain:
     def test_end_to_end_merge(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
         filaments = load(tmp_path)
-        assert len(filaments) == 12
+        assert len(filaments) == 10  # 9 from OFD + SpoolmanDB's Generic Blue; its Sunlu Black is covered by OFD
         assert len({f["id"] for f in filaments}) == len(filaments)
-        assert [m["material"] for m in load(tmp_path, "materials.json")] == ["PLA", "PETG", "TPU95"]
+        assert [m["material"] for m in load(tmp_path, "materials.json")] == ["PLA", "TPU95", "PETG"]
 
-    def test_brand_spelling_spoolmandb_wins(self, run: RunFn, tmp_path: Path) -> None:
-        """OFD says 'SUNLU', SpoolmanDB says 'Sunlu': one spelling in the dropdown, SpoolmanDB's."""
+    def test_ofd_wins_where_both_have_the_product(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        manufacturers = {f["manufacturer"] for f in load(tmp_path) if f["manufacturer"].lower() == "sunlu"}
-        assert manufacturers == {"Sunlu"}
+        black = [f for f in load(tmp_path) if norm(f["manufacturer"]) == "sunlu" and f["name"] == "Black"]
+        (only,) = black
+        assert only["id"] == OFD_BLACK_ID  # not the SpoolmanDB id sunlu_pla_black_1000_175_n
+        assert (only["extruder_temp"], only["spool_weight"]) == (215, 190.0)  # OFD's values, SpoolmanDB had 210 and 200
+        assert not any(f["id"] == "sunlu_pla_black_1000_175_n" for f in load(tmp_path))
 
-    def test_ofd_duplicate_of_spoolmandb_dropped(self, run: RunFn, tmp_path: Path) -> None:
+    def test_ofd_materials_win_and_spoolmandb_only_ones_remain(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        black = [f for f in load(tmp_path) if f["manufacturer"] == "Sunlu" and f["name"] == "Black"]
-        assert len(black) == 1
-        assert black[0]["id"] == "sunlu_pla_black_1000_175_n"  # the SpoolmanDB entry, not ofd_*
-        assert any(f["name"] == "White" and f["id"].startswith("ofd_") for f in load(tmp_path))
+        by_material = {m["material"]: m for m in load(tmp_path, "materials.json")}
+        assert by_material["PLA"]["density"] == 1.25  # OFD's, SpoolmanDB says 1.24
+        assert by_material["PETG"] == {"material": "PETG", "density": 1.27}
+
+    def test_ofd_records_are_published_as_is(self, run: RunFn, tmp_path: Path) -> None:
+        assert run(tmp_path) == 0
+        published = {f["id"]: f for f in json.loads((FIXTURES / "ofd" / "filaments.json").read_text())}
+        out = {f["id"]: f for f in load(tmp_path)}
+        for rid, want in published.items():
+            assert out[rid] == {**want, "manufacturer": out[rid]["manufacturer"]}  # brand spelling is the one allowed change
+            assert norm(out[rid]["manufacturer"]) == norm(want["manufacturer"])
+
+    def test_brand_spelling_ofd_wins(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        """OFD says 'SUNLU', SpoolmanDB says 'Sunlu': one spelling in the dropdown, OFD's (seen first)."""
+        sdb = json.loads(sources[SDB_F])
+        sdb.append({**sdb[0], "id": "sunlu_pla_red_1000_175_n", "name": "Red"})  # SpoolmanDB-only, so it survives the merge
+        assert run(tmp_path, payloads=with_sdb(sources, filaments=sdb)) == 0
+        sunlu = [f for f in load(tmp_path) if norm(f["manufacturer"]) == "sunlu"]
+        assert any(f["id"] == "sunlu_pla_red_1000_175_n" for f in sunlu)
+        assert {f["manufacturer"] for f in sunlu} == {"SUNLU"}
 
     def test_same_name_different_weight_is_not_a_duplicate(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
-        """dedupe_key includes weight: a SpoolmanDB 500 g Sunlu Black must not swallow OFD's 1000 g one."""
-        sdb_url = ofd2spoolman.SPOOLMANDB_URL + "filaments.json"
-        sdb = json.loads(sources[sdb_url])
+        """dedupe_key includes weight: a SpoolmanDB 500 g Sunlu Black must not be swallowed by OFD's 1000 g one."""
+        sdb = json.loads(sources[SDB_F])
         for f in sdb:
             if f["manufacturer"] == "Sunlu" and f["name"] == "Black":
                 f["weight"] = 500.0
-        assert run(tmp_path, payloads={**sources, sdb_url: json.dumps(sdb).encode()}) == 0
-        black = [f for f in load(tmp_path) if f["manufacturer"] == "Sunlu" and f["name"] == "Black"]
+        assert run(tmp_path, payloads=with_sdb(sources, filaments=sdb)) == 0
+        black = [f for f in load(tmp_path) if norm(f["manufacturer"]) == "sunlu" and f["name"] == "Black"]
         assert sorted(f["weight"] for f in black) == [500.0, 1000.0]
 
-    def test_spoolmandb_entries_pass_through_unchanged(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+    def test_spoolmandb_only_entries_pass_through_unchanged(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        original = json.loads(sources[ofd2spoolman.SPOOLMANDB_URL + "filaments.json"])
+        (original,) = [f for f in json.loads(sources[SDB_F]) if f["id"] == "generic_petg_blue_1000_175_n"]
         out = {f["id"]: f for f in load(tmp_path)}
-        assert [out[f["id"]] for f in original] == original
+        assert out[original["id"]] == original
 
-    def test_discontinued_flag(self, run: RunFn, tmp_path: Path) -> None:
-        default, with_disc = tmp_path / "default", tmp_path / "disc"
+    def test_include_discontinued_is_accepted_and_ignored(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        default, flagged = tmp_path / "default", tmp_path / "flagged"
         assert run(default) == 0
-        assert run(with_disc, "--include-discontinued") == 0
-        assert len(load(default)) == 12
-        assert len(load(with_disc)) == 15
+        assert run(flagged, "--include-discontinued") == 0
+        assert (default / "filaments.json").read_bytes() == (flagged / "filaments.json").read_bytes()
+        assert "--include-discontinued is ignored" in caplog.text
+
+    def test_over_long_ofd_name_is_published_unchanged_with_a_warning(
+        self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ofd = json.loads(sources[ofd2spoolman.OFD_FILAMENTS_URL])
+        ofd[0]["name"] = "Z" * 70
+        with caplog.at_level(logging.WARNING):
+            assert run(tmp_path, payloads={**sources, ofd2spoolman.OFD_FILAMENTS_URL: json.dumps(ofd).encode()}) == 0
+        assert {f["id"]: f for f in load(tmp_path)}[ofd[0]["id"]]["name"] == "Z" * 70
+        assert "OFD name exceeds" in caplog.text
 
     def test_dry_run_writes_nothing(self, run: RunFn, tmp_path: Path) -> None:
         out = tmp_path / "out"
@@ -246,9 +218,9 @@ class TestMain:
 
     def test_cli_reads_fixtures_from_disk(self, tmp_path: Path) -> None:
         fixtures = Path(__file__).parent / "fixtures"
-        argv = ["--out", str(tmp_path), "--from-ofd-file", str(fixtures / "ofd_all.json"), "--from-sdb-dir", str(fixtures / "sdb")]
+        argv = ["--out", str(tmp_path), "--from-ofd-dir", str(fixtures / "ofd"), "--from-sdb-dir", str(fixtures / "sdb")]
         assert ofd2spoolman.main(argv, now=FIXTURE_NOW) == 0
-        assert len(load(tmp_path)) == 12
+        assert len(load(tmp_path)) == 10
 
     def test_out_is_required(self, capsys: pytest.CaptureFixture[str]) -> None:
         with pytest.raises(SystemExit) as exc:
@@ -258,7 +230,7 @@ class TestMain:
 
     def test_disk_sources_options_must_pair(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit) as exc:
-            ofd2spoolman.main(["--out", str(tmp_path), "--from-ofd-file", "x.json"])
+            ofd2spoolman.main(["--out", str(tmp_path), "--from-ofd-dir", "x"])
         assert exc.value.code == 2
 
 
@@ -275,26 +247,46 @@ class TestGuards:
 
     def test_fetch_failure_exits_2_and_leaves_files_untouched(self, run: RunFn, tmp_path: Path) -> None:
         before = self.seed(tmp_path, 3)
-        # OFD payload missing -> KeyError inside the fetcher; garbage JSON is covered below
+        # every payload missing -> KeyError inside the fetcher; garbage JSON is covered below
         assert run(tmp_path, payloads={}) == 2
         assert (tmp_path / "filaments.json").read_bytes() == before[0]
         assert (tmp_path / "materials.json").read_bytes() == before[1]
         assert sorted(p.name for p in tmp_path.iterdir()) == ["filaments.json", "materials.json"]
 
-    def test_unparseable_source_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
-        broken = {**sources, ofd2spoolman.OFD_URL: b"<html>502</html>"}
-        assert run(tmp_path / "out", payloads=broken) == 2
+    @pytest.mark.parametrize("url", [ofd2spoolman.OFD_FILAMENTS_URL, ofd2spoolman.OFD_MATERIALS_URL, ofd2spoolman.OFD_MANIFEST_URL])
+    @pytest.mark.parametrize("payload", [b"<html>502</html>", b"[]", b"null"], ids=["html", "empty-list", "null"])
+    def test_unusable_ofd_source_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, url: str, payload: bytes) -> None:
+        assert run(tmp_path / "out", payloads={**sources, url: payload}) == 2
+        assert not (tmp_path / "out").exists()
+
+    @pytest.mark.parametrize("url", [ofd2spoolman.OFD_FILAMENTS_URL, ofd2spoolman.OFD_MATERIALS_URL])
+    def test_catalog_file_that_is_an_object_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, url: str) -> None:
+        assert run(tmp_path / "out", payloads={**sources, url: b'{"a": 1}'}) == 2
+
+    def test_record_without_required_keys_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        ofd = json.loads(sources[ofd2spoolman.OFD_FILAMENTS_URL])
+        del ofd[3]["weight"]
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_FILAMENTS_URL: json.dumps(ofd).encode()}) == 2
+
+    @pytest.mark.parametrize("missing", [ofd2spoolman.OFD_FILAMENTS_URL, ofd2spoolman.OFD_MATERIALS_URL, ofd2spoolman.OFD_MANIFEST_URL])
+    def test_any_missing_ofd_file_exits_2(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, missing: str) -> None:
+        assert run(tmp_path / "out", payloads={u: p for u, p in sources.items() if u != missing}) == 2
+
+    def test_duplicate_ofd_ids_exit_3(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
+        ofd = json.loads(sources[ofd2spoolman.OFD_FILAMENTS_URL])
+        ofd.append({**ofd[0], "name": "Another"})
+        assert run(tmp_path / "out", payloads={**sources, ofd2spoolman.OFD_FILAMENTS_URL: json.dumps(ofd).encode()}) == 3
         assert not (tmp_path / "out").exists()
 
     def test_duplicate_ids_exit_3_and_publish_nothing(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
         sdb = json.loads(sources[ofd2spoolman.SPOOLMANDB_URL + "filaments.json"])
-        sdb.append(dict(sdb[0], name="Another"))
+        sdb.append(dict(sdb[1], name="Another"))  # sdb[0] is covered by OFD and dropped, so duplicate the SpoolmanDB-only entry
         dup = {**sources, ofd2spoolman.SPOOLMANDB_URL + "filaments.json": json.dumps(sdb).encode()}
         assert run(tmp_path / "out", payloads=dup) == 3
         assert not (tmp_path / "out").exists()
 
     def test_shrink_over_half_exits_4_and_leaves_files_untouched(self, run: RunFn, tmp_path: Path) -> None:
-        before = self.seed(tmp_path, 30)  # fixtures produce 12, below 30 // 2
+        before = self.seed(tmp_path, 30)  # fixtures produce 10, below 30 // 2
         assert run(tmp_path) == 4
         assert (tmp_path / "filaments.json").read_bytes() == before[0]
         assert (tmp_path / "materials.json").read_bytes() == before[1]
@@ -302,11 +294,11 @@ class TestGuards:
     def test_shrink_at_exactly_half_is_allowed(self, run: RunFn, tmp_path: Path) -> None:
         self.seed(tmp_path, 20)  # 10 is not < 20 // 2
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 12
+        assert len(load(tmp_path)) == 10
 
     def test_missing_published_file_is_first_run_and_publishes(self, run: RunFn, tmp_path: Path) -> None:
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 12
+        assert len(load(tmp_path)) == 10
 
     @pytest.mark.parametrize(
         "content",
@@ -335,7 +327,7 @@ class TestGuards:
         assert run(tmp_path) == 7
         (tmp_path / "filaments.json").unlink()
         assert run(tmp_path) == 0
-        assert len(load(tmp_path)) == 12
+        assert len(load(tmp_path)) == 10
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
     def test_unreadable_published_file_exits_7(self, run: RunFn, tmp_path: Path) -> None:
@@ -687,50 +679,104 @@ def write_state(out: Path, **fields: Any) -> None:
     (out / "state.json").write_text(json.dumps(fields))
 
 
+def check(
+    sdb: list[dict[str, Any]],
+    sdb_mats: list[dict[str, Any]],
+    out: list[dict[str, Any]],
+    out_mats: list[dict[str, Any]],
+    ofd: list[dict[str, Any]] | None = None,
+    ofd_mats: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """check_spoolmandb_superset with OFD defaulting to 'covers nothing'; the output is the filaments/materials after the merge."""
+    return ofd2spoolman.check_spoolmandb_superset(sdb, sdb_mats, ofd or [], ofd_mats or [], out, out_mats)
+
+
 class TestSpoolmanDbSuperset:
-    sdb: ClassVar[list[dict[str, Any]]] = [{"id": "a", "manufacturer": "Sunlu", "name": "X", "material": "PLA", "density": 1.24}]
+    sdb: ClassVar[list[dict[str, Any]]] = [
+        {"id": "a", "manufacturer": "Sunlu", "name": "X", "material": "PLA", "weight": 1000.0, "diameter": 1.75, "density": 1.24}
+    ]
     mats: ClassVar[list[dict[str, Any]]] = [{"material": "PLA", "density": 1.24}]
+    ofd_same_key: ClassVar[list[dict[str, Any]]] = [
+        {"id": "ofd_a", "manufacturer": "SUNLU", "name": "x", "material": "pla", "weight": 1000.0, "diameter": 1.75, "density": 1.25}
+    ]
 
     def test_identical_passes(self) -> None:
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, self.mats) == []
+        assert check(self.sdb, self.mats, self.sdb, self.mats) == []
 
     def test_brand_respelling_is_allowed(self) -> None:
         out = [dict(self.sdb[0], manufacturer="SUNLU")]
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats) == []
+        assert check(self.sdb, self.mats, out, self.mats) == []
 
     def test_missing_filament_is_reported(self) -> None:
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, [], self.mats)
+        assert check(self.sdb, self.mats, [], self.mats)
 
     def test_changed_field_is_reported(self) -> None:
         out = [dict(self.sdb[0], density=9.9)]
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats)
+        assert check(self.sdb, self.mats, out, self.mats)
 
     def test_different_brand_is_reported(self) -> None:
         out = [dict(self.sdb[0], manufacturer="Other")]
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, out, self.mats)
+        assert check(self.sdb, self.mats, out, self.mats)
 
     def test_missing_material_is_reported(self) -> None:
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, [])
+        assert check(self.sdb, self.mats, self.sdb, [])
 
     def test_changed_material_is_reported(self) -> None:
-        assert ofd2spoolman.check_spoolmandb_superset(self.sdb, self.mats, self.sdb, [{"material": "PLA", "density": 2}])
+        assert check(self.sdb, self.mats, self.sdb, [{"material": "PLA", "density": 2}])
 
-    def test_end_to_end_good_fixtures_pass_despite_brand_unification(self, run: RunFn, tmp_path: Path) -> None:
-        # the fixtures have Sunlu (SpoolmanDB) vs SUNLU (OFD): the rewrite must not trip the guard
+    def test_covered_entry_is_accounted_for_by_the_ofd_record(self) -> None:
+        assert check(self.sdb, self.mats, self.ofd_same_key, self.mats, ofd=self.ofd_same_key) == []
+
+    def test_covered_entry_without_its_ofd_record_in_the_output_is_reported(self) -> None:
+        (problem,) = check(self.sdb, self.mats, [], self.mats, ofd=self.ofd_same_key)
+        assert "covered by OFD" in problem
+
+    def test_covered_entry_may_not_be_stood_in_for_by_another_record(self) -> None:
+        other = [dict(self.ofd_same_key[0], id="ofd_b", name="Other")]
+        assert check(self.sdb, self.mats, [*other], self.mats, ofd=[*self.ofd_same_key, *other])
+
+    def test_uncovered_entry_is_still_held_to_unchanged(self) -> None:
+        assert check(self.sdb, self.mats, [], self.mats, ofd=[dict(self.ofd_same_key[0], name="Different")])
+
+    def test_ofd_record_contents_never_matter_beyond_key_and_id(self) -> None:
+        """OFD wins on overlap, so its fields (and unrelated OFD records) must not be held against SpoolmanDB's."""
+        ofd = [
+            dict(self.ofd_same_key[0], density=9.9, extruder_temp=1, color_hex="zzz", spool_weight=None),
+            {"id": "ofd_unrelated", "manufacturer": "Other", "name": "Y", "material": "ABS", "weight": 750.0, "diameter": 2.85},
+        ]
+        assert check(self.sdb, self.mats, ofd, self.mats, ofd=ofd) == []
+
+    def test_material_ofd_lists_may_differ_or_be_absent(self) -> None:
+        ofd_mats = [{"material": "pla", "density": 1.25}]
+        assert check(self.sdb, self.mats, self.sdb, ofd_mats, ofd_mats=ofd_mats) == []
+        assert check(self.sdb, self.mats, self.sdb, [], ofd_mats=ofd_mats) == []
+
+    def test_material_ofd_lacks_must_be_present_unchanged(self) -> None:
+        assert check(self.sdb, self.mats, self.sdb, [], ofd_mats=[{"material": "ABS", "density": 1.0}])
+
+    def test_end_to_end_good_fixtures_pass_despite_brand_unification_and_overlap(self, run: RunFn, tmp_path: Path) -> None:
+        # Sunlu (SpoolmanDB) vs SUNLU (OFD), and OFD covers SpoolmanDB's Sunlu Black: neither may trip the guard
         assert run(tmp_path) == 0
 
     def test_end_to_end_violation_exits_5_and_writes_nothing(
         self, run: RunFn, sources: dict[str, bytes], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # simulate a merge bug that drops a SpoolmanDB entry
+        # simulate a merge bug that drops a SpoolmanDB-only material (the last one; OFD's come first)
         real_merge = ofd2spoolman.merge_materials
-        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda m, f: real_merge(m, f)[1:])
+        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda o, m: real_merge(o, m)[:-1])
         assert run(tmp_path / "out", payloads=sources) == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
         assert not (tmp_path / "out").exists()
 
     def test_runs_on_dry_run_too(self, run: RunFn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real_merge = ofd2spoolman.merge_materials
-        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda m, f: real_merge(m, f)[1:])
+        monkeypatch.setattr(ofd2spoolman, "merge_materials", lambda o, m: real_merge(o, m)[:-1])
+        assert run(tmp_path, "--dry-run") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
+
+    def test_end_to_end_dropping_the_ofd_record_that_covers_a_spoolmandb_entry_exits_5(
+        self, run: RunFn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real_merge = ofd2spoolman.merge_filaments
+        monkeypatch.setattr(ofd2spoolman, "merge_filaments", lambda o, s: [f for f in real_merge(o, s) if f["id"] != OFD_BLACK_ID])
         assert run(tmp_path, "--dry-run") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
 
 
@@ -768,7 +814,7 @@ class TestStateAndFreshness:
         assert state["ofd_generated_at"] == "2026-10-13T03:01:57Z"
         assert state["run_at"] == "2026-10-13T04:01:57+00:00"
         assert state["counts"]["spoolmandb_filaments"] == 2
-        assert state["counts"]["ofd_filaments"] == 11
+        assert state["counts"]["ofd_filaments"] == 9
         assert len(state["spoolmandb_hash"]) == 64
 
     def test_dry_run_writes_no_state(self, run: RunFn, tmp_path: Path) -> None:
@@ -801,7 +847,7 @@ class TestStateAndFreshness:
     def test_ofd_stalled_warns_but_still_publishes(self, run: RunFn, tmp_path: Path) -> None:
         code = run(tmp_path, now=FIXTURE_NOW + ofd2spoolman.OFD_STALE_AFTER + timedelta(days=1))
         assert code == ofd2spoolman.EXIT_PUBLISHED_WITH_WARNINGS == 10
-        assert len(load(tmp_path)) == 12
+        assert len(load(tmp_path)) == 10
         assert (tmp_path / "state.json").exists()
 
     def test_ofd_fresh_is_quiet(self, run: RunFn, tmp_path: Path) -> None:
@@ -810,9 +856,9 @@ class TestStateAndFreshness:
     def test_stalled_fallback_uses_first_seen_version_when_no_generated_at(self) -> None:
         prev = {"ofd_version": "v1", "ofd_version_changed_at": FIXTURE_NOW.isoformat()}
         old = FIXTURE_NOW + timedelta(days=4)
-        assert ofd2spoolman.check_ofd_stalled({"version": "v1"}, prev, old)
-        assert not ofd2spoolman.check_ofd_stalled({"version": "v2"}, prev, old)  # version advanced
-        assert not ofd2spoolman.check_ofd_stalled({"version": "v1"}, {}, old)  # nothing to compare
+        assert ofd2spoolman.check_ofd_stalled({"dataset_version": "v1"}, prev, old)
+        assert not ofd2spoolman.check_ofd_stalled({"dataset_version": "v2"}, prev, old)  # version advanced
+        assert not ofd2spoolman.check_ofd_stalled({"dataset_version": "v1"}, {}, old)  # nothing to compare
 
     def test_exit_codes_are_distinct_and_warning_code_is_not_a_failure_code(self) -> None:
         failures = [2, 3, 4, ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET, ofd2spoolman.EXIT_SOURCE_SHRANK]
@@ -887,7 +933,7 @@ class TestStalledEdges:
         assert ofd2spoolman.check_ofd_stalled({}, prev, FIXTURE_NOW + timedelta(days=30)) == []
 
     def test_unparseable_generated_at_warns(self, caplog: pytest.LogCaptureFixture) -> None:
-        ofd2spoolman.check_ofd_stalled({"version": "v", "generated_at": "garbage"}, {}, FIXTURE_NOW)
+        ofd2spoolman.check_ofd_stalled({"dataset_version": "v", "generated_at": "garbage"}, {}, FIXTURE_NOW)
         assert any(r.levelname == "WARNING" and "generated_at" in r.getMessage() for r in caplog.records)
 
     def test_message_reports_hours(self) -> None:
@@ -906,39 +952,71 @@ class TestStalledEdges:
 class TestSupersetEdges:
     def test_duplicate_material_names_do_not_false_fire(self) -> None:
         mats = [{"material": "PLA", "density": 1.24}, {"material": "PLA", "density": 1.25}]
-        assert ofd2spoolman.check_spoolmandb_superset([], mats, [], list(mats)) == []
+        assert check([], mats, [], list(mats)) == []
 
     def test_lost_duplicate_material_is_reported(self) -> None:
         mats = [{"material": "PLA", "density": 1.24}, {"material": "PLA", "density": 1.25}]
-        assert ofd2spoolman.check_spoolmandb_superset([], mats, [], mats[:1])
+        assert check([], mats, [], mats[:1])
 
     def test_bool_is_not_int(self) -> None:
-        sdb = [{"id": "a", "manufacturer": "S", "glow": False}]
-        assert ofd2spoolman.check_spoolmandb_superset(sdb, [], [{"id": "a", "manufacturer": "S", "glow": 0}], [])
-        assert ofd2spoolman.check_spoolmandb_superset(sdb, [], [{"id": "a", "manufacturer": "S", "glow": False}], []) == []
+        base = {"id": "a", "manufacturer": "S", "material": "PLA", "name": "X", "weight": 1.0, "diameter": 1.75}
+        sdb = [{**base, "glow": False}]
+        assert check(sdb, [], [{**base, "glow": 0}], [])
+        assert check(sdb, [], [{**base, "glow": False}], []) == []
 
     def test_end_to_end_field_corruption_is_caught(self, run: RunFn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A bug that alters a SpoolmanDB field after the snapshot must fire the guard (kills 'snapshot not deep-copied')."""
-        real_merge = ofd2spoolman.merge_materials
+        real_merge = ofd2spoolman.merge_filaments
 
-        def corrupting(m: list[dict[str, Any]], f: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            f[0]["density"] = 9.99
-            return real_merge(m, f)
+        def corrupting(o: list[dict[str, Any]], sdb: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            merged = real_merge(o, sdb)
+            next(f for f in merged if f["id"] == "generic_petg_blue_1000_175_n")["density"] = 9.99
+            return merged
 
-        monkeypatch.setattr(ofd2spoolman, "merge_materials", corrupting)
+        monkeypatch.setattr(ofd2spoolman, "merge_filaments", corrupting)
         assert run(tmp_path / "out") == ofd2spoolman.EXIT_SPOOLMANDB_NOT_SUPERSET
         assert not (tmp_path / "out").exists()
+
+
+class TestPreviousVersionState:
+    def test_state_from_the_all_json_era_is_ignored_where_obsolete_and_the_run_publishes(
+        self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Layout written before ADR 0009: inputs.ofd, converted-row count, all.json-era version."""
+        write_state(
+            tmp_path,
+            run_at="2026-11-11T04:00:00+00:00",
+            ofd_version="2026.11.11",
+            ofd_generated_at="2026-11-11T03:00:00Z",
+            ofd_version_changed_at="2026-11-11T04:00:00+00:00",
+            inputs={
+                "ofd": {"last_modified": "Wed, 11 Nov 2026 03:00:00 GMT", "sha256": "ab" * 32},
+                "spoolmandb_filaments": {"last_modified": LM_SDB_F, "sha256": "cd" * 32},
+            },
+            counts={
+                "spoolmandb_filaments": 2,
+                "ofd_filaments": 12,
+            },  # live was 22,980; scaled to the tiny fixture (the old count is a converted-row count)
+        )
+        caplog.set_level(logging.INFO)
+        assert run(tmp_path, last_modified=LAST_MODIFIED, now=FIXTURE_NOW) == 0
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert set(state["inputs"]) == {"ofd_manifest", "ofd_filaments", "ofd_materials", "spoolmandb_filaments", "spoolmandb_materials"}
+        assert state["ofd_version"] == "2026.10.13"
+        assert state["counts"]["ofd_filaments"] == 9
+        first = {r.getMessage().split()[1] for r in freshness_lines(caplog) if "status=first" in r.getMessage()}
+        assert first == {"source=ofd_manifest", "source=ofd_filaments", "source=ofd_materials", "source=spoolmandb_materials"}
 
 
 class TestStateEdges:
     def test_ofd_version_changed_at_advances_on_new_version(self, run: RunFn, sources: dict[str, bytes], tmp_path: Path) -> None:
         assert run(tmp_path) == 0
         first = json.loads((tmp_path / "state.json").read_text())
-        newer = json.loads(sources[ofd2spoolman.OFD_URL])
-        newer["version"] = "2026.10.14"
+        newer = json.loads(sources[ofd2spoolman.OFD_MANIFEST_URL])
+        newer["dataset_version"] = "2026.10.14"
         newer["generated_at"] = "2026-10-14T03:00:00Z"
         later = FIXTURE_NOW + timedelta(days=1)
-        assert run(tmp_path, now=later, payloads={**sources, ofd2spoolman.OFD_URL: json.dumps(newer).encode()}) == 0
+        assert run(tmp_path, now=later, payloads={**sources, ofd2spoolman.OFD_MANIFEST_URL: json.dumps(newer).encode()}) == 0
         second = json.loads((tmp_path / "state.json").read_text())
         assert second["ofd_version"] == "2026.10.14"
         assert second["ofd_version_changed_at"] == later.isoformat(timespec="seconds") != first["ofd_version_changed_at"]
@@ -954,7 +1032,13 @@ class TestStateEdges:
 
 
 LM_OFD, LM_SDB_F, LM_SDB_M = (f"Tue, 13 Oct 2026 0{n}:00:00 GMT" for n in (3, 4, 5))
-LAST_MODIFIED = {ofd2spoolman.OFD_URL: LM_OFD, SDB_F: LM_SDB_F, SDB_M: LM_SDB_M}
+LAST_MODIFIED = {
+    ofd2spoolman.OFD_MANIFEST_URL: LM_OFD,
+    ofd2spoolman.OFD_FILAMENTS_URL: LM_OFD,
+    ofd2spoolman.OFD_MATERIALS_URL: LM_OFD,
+    SDB_F: LM_SDB_F,
+    SDB_M: LM_SDB_M,
+}
 
 
 def freshness_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -977,8 +1061,8 @@ class TestInputFreshness:
         assert freshness_lines(caplog)
         assert not mismatches(caplog)
         inputs = json.loads((tmp_path / "state.json").read_text())["inputs"]
-        assert set(inputs) == {"ofd", "spoolmandb_filaments", "spoolmandb_materials"}
-        assert inputs["ofd"]["last_modified"] == LM_OFD
+        assert set(inputs) == {"ofd_manifest", "ofd_filaments", "ofd_materials", "spoolmandb_filaments", "spoolmandb_materials"}
+        assert inputs["ofd_manifest"]["last_modified"] == LM_OFD
         assert inputs["spoolmandb_filaments"]["last_modified"] == LM_SDB_F
         assert all(len(v["sha256"]) == 64 for v in inputs.values())
 
@@ -999,22 +1083,22 @@ class TestInputFreshness:
         assert run(tmp_path, last_modified=LAST_MODIFIED) == 0
         assert not mismatches(caplog)
         unchanged = [r.getMessage() for r in freshness_lines(caplog) if "unchanged" in r.getMessage()]
-        assert len(unchanged) == 3
+        assert len(unchanged) == 5
         assert all(r.levelno == logging.INFO for r in freshness_lines(caplog))
 
-    def test_last_modified_moved_with_identical_content_warns_for_ofd(
+    def test_last_modified_moved_with_identical_content_warns_for_the_ofd_manifest(
         self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         self._first(run, tmp_path)
         caplog.set_level(logging.INFO)
-        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
+        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_MANIFEST_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
         assert run(tmp_path, last_modified=moved) == 0  # exit code unchanged, still publishes
         (line,) = mismatches(caplog)
-        assert line.startswith("FRESHNESS-MISMATCH source=ofd ")
+        assert line.startswith("FRESHNESS-MISMATCH source=ofd_manifest ")
         assert "last_modified moved" in line
         assert "sha256" in line
         recorded = json.loads((tmp_path / "state.json").read_text())
-        assert recorded["freshness_mismatches"][0]["source"] == "ofd"
+        assert recorded["freshness_mismatches"][0]["source"] == "ofd_manifest"
         assert recorded["freshness_mismatches"][0]["moved"] == "last_modified"
 
     def test_content_changed_with_same_last_modified_warns(
@@ -1030,7 +1114,7 @@ class TestInputFreshness:
 
     def test_mismatch_does_not_repeat_once_recorded(self, run: RunFn, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         self._first(run, tmp_path)
-        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
+        moved = {**LAST_MODIFIED, ofd2spoolman.OFD_MANIFEST_URL: "Wed, 14 Oct 2026 03:00:00 GMT"}
         assert run(tmp_path, last_modified=moved) == 0
         caplog.set_level(logging.INFO)
         caplog.clear()  # forget the first run's (expected) warning
@@ -1052,11 +1136,17 @@ class TestInputFreshness:
         assert not mismatches(caplog)
 
     def test_local_fetcher_has_no_last_modified(self, sources: dict[str, bytes], tmp_path: Path) -> None:
-        ofd_file = tmp_path / "all.json"
-        ofd_file.write_bytes(sources[ofd2spoolman.OFD_URL])
-        fetched = ofd2spoolman.local_fetcher(ofd_file, tmp_path)(ofd2spoolman.OFD_URL)
-        assert fetched.last_modified is None
-        assert fetched.data == sources[ofd2spoolman.OFD_URL]
+        ofd_dir, sdb_dir = tmp_path / "ofd", tmp_path / "sdb"
+        ofd_dir.mkdir()
+        sdb_dir.mkdir()
+        for url in (ofd2spoolman.OFD_FILAMENTS_URL, ofd2spoolman.OFD_MANIFEST_URL):
+            (ofd_dir / url.rsplit("/", 1)[1]).write_bytes(sources[url])
+        (sdb_dir / "filaments.json").write_bytes(sources[SDB_F])
+        fetch = ofd2spoolman.local_fetcher(ofd_dir, sdb_dir)
+        for url in (ofd2spoolman.OFD_FILAMENTS_URL, ofd2spoolman.OFD_MANIFEST_URL, SDB_F):
+            assert fetch(url).last_modified is None
+            assert fetch(url).data == sources[url]
+        assert fetch(ofd2spoolman.OFD_FILAMENTS_URL).data != fetch(SDB_F).data  # same file name, different directory
 
     def test_detector_can_fail_and_stays_silent_on_two_sided_change(self) -> None:
         """Known-bad and known-good straight into the pure function."""
@@ -1091,11 +1181,14 @@ class TestInputFreshness:
         assert (result.status, result.moved) == ("mismatch", "sha256")
 
     def test_policy_is_per_source(self) -> None:
-        prev = {"inputs": {n: ofd2spoolman.input_record(ofd2spoolman.Fetched(b"x", "A")) for n in ("ofd", "spoolmandb_filaments")}}
-        results = ofd2spoolman.check_input_freshness(
-            prev, {"ofd": ofd2spoolman.Fetched(b"x", "B"), "spoolmandb_filaments": ofd2spoolman.Fetched(b"x", "B")}
-        )
-        assert {r.source: r.status for r in results} == {"ofd": "mismatch", "spoolmandb_filaments": "redeployed"}
+        names = ("ofd_manifest", "ofd_filaments", "spoolmandb_filaments")
+        prev = {"inputs": {n: ofd2spoolman.input_record(ofd2spoolman.Fetched(b"x", "A")) for n in names}}
+        results = ofd2spoolman.check_input_freshness(prev, {n: ofd2spoolman.Fetched(b"x", "B") for n in names})
+        assert {r.source: r.status for r in results} == {
+            "ofd_manifest": "mismatch",
+            "ofd_filaments": "redeployed",
+            "spoolmandb_filaments": "redeployed",
+        }
 
     @pytest.mark.parametrize(
         "inputs",
