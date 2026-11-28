@@ -93,7 +93,7 @@
 {"material":"PPA-CF25","density":1.23,"extruder_temp":null,"bed_temp":null},
 {"material":"PPA-GF","density":1.27,"extruder_temp":null,"bed_temp":null},
 {"material":"PPE","density":1.11,"extruder_temp":305,"bed_temp":100},
-{"material":"PPS","density":1.29,"extruder_temp":328,"bed_temp":105},
+{"material":"PPS","density":1.295,"extruder_temp":325,"bed_temp":105},
 {"material":"PPS-CF","density":1.28,"extruder_temp":320,"bed_temp":105},
 {"material":"PPS-GF20","density":1.36,"extruder_temp":null,"bed_temp":null},
 {"material":"PSU","density":1.24,"extruder_temp":365,"bed_temp":150},
